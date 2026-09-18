@@ -257,9 +257,6 @@ def get_gols_sofridos(jogo, team_id):
         return jogo["goals"]["away"] or 0
     return jogo["goals"]["home"] or 0
 
-def get_placar_final(jogo):
-    return (jogo["goals"]["home"] or 0, jogo["goals"]["away"] or 0)
-
 # ─────────────────────────────────────────────
 # ANÁLISES
 # ─────────────────────────────────────────────
@@ -329,7 +326,6 @@ def taxa(lista, linha):
     return acertos / len(lista), acertos
 
 def analisar_placares(jogos, team_id):
-    """Analisa placares mais frequentes do time."""
     placares = []
     gols_feitos, gols_sofridos = [], []
     for j in jogos:
@@ -409,7 +405,6 @@ ID_AWAY_CORN  = 58
 ID_TOTAL_SHOT = 211
 ID_TOTAL_SOG  = 87
 ID_AWAY_SHOTS = 276
-
 # ─────────────────────────────────────────────
 # ENTRADA PRINCIPAL
 # ─────────────────────────────────────────────
@@ -476,7 +471,7 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
     return pernas[:PERNAS_MAX]
 
 # ─────────────────────────────────────────────
-# ENTRADA NORMAL
+# ENTRADA NORMAL (VALOR)
 # ─────────────────────────────────────────────
 
 def buscar_valor_jogo(odds):
@@ -515,27 +510,18 @@ def buscar_valor_jogo(odds):
 # ─────────────────────────────────────────────
 
 def escolher_placar(mandante, visitante, placar_odds):
-    """Escolhe o placar mais coerente com o contexto."""
     if not mandante or not visitante or not placar_odds:
-        return None
-
-    media_gols_mand = mandante.get("media_fin", 0)
-    gols_feitos = mandante.get("gols_feitos", 1.5)
-
-    # Prioridade: 2:0, 1:0, 2:1, 1:1
+        return None, None
     candidatos = ["2:0", "1:0", "2:1", "1:1"]
-
-    # Se o mandante faz muitos gols em casa, prioriza placares com mais gols
     for c in candidatos:
         if c in placar_odds:
             return c, placar_odds[c]
     return None, None
 
 def montar_placar_multipla(jogos, dados_por_jogo):
-    """Agrupa jogos por horário e monta múltiplas de placar."""
     por_horario = defaultdict(list)
     for jogo in jogos:
-        data_hora = jogo["fixture"]["date"][:16]  # "YYYY-MM-DDTHH:MM"
+        data_hora = jogo["fixture"]["date"][:16]
         por_horario[data_hora].append(jogo)
 
     for horario, lista in por_horario.items():
@@ -563,9 +549,8 @@ def montar_placar_multipla(jogos, dados_por_jogo):
             return candidatos[:PLACAR_MAX_JOGOS]
     return None
 
-
 # ─────────────────────────────────────────────
-# FORMATADORES
+# FORMATADORES DE MENSAGEM
 # ─────────────────────────────────────────────
 
 def fmt(v):
@@ -726,7 +711,7 @@ def msg_placar(entradas, horario):
     return "\n".join(linhas), odd_final
 
 # ─────────────────────────────────────────────
-# PROCESSAMENTO
+# PROCESSAMENTO PRINCIPAL
 # ─────────────────────────────────────────────
 
 def processar_jogos():
@@ -757,6 +742,7 @@ def processar_jogos():
         away_id   = jogo["teams"]["away"]["id"]
         home_nome = jogo["teams"]["home"]["name"]
         away_nome = jogo["teams"]["away"]["name"]
+        horario = jogo["fixture"]["date"]
 
         print(f"\n→ {home_nome} x {away_nome}")
 
@@ -780,7 +766,6 @@ def processar_jogos():
             print("   Sem Bet365.")
             continue
 
-        # Guarda dados pro placar
         if not placar_ja:
             placar_odds = {}
             if ID_EXACT in odds[BET365_ID]:
@@ -793,7 +778,6 @@ def processar_jogos():
                 "placar_odds": placar_odds
             }
 
-        # Já enviado? Pula entradas de jogo, mas continua pro placar
         ja_enviado = str(fixture_id) in enviados
 
         if not ja_enviado:
@@ -811,25 +795,49 @@ def processar_jogos():
             if alertas:
                 enviar_mensagem(msg_odd_errada(liga_nome, home_nome, away_nome, alertas))
                 print(f"   💰 Odd errada")
-                time.sleep(3)
+                time.sleep(10)
 
             # 2. ENTRADA PRINCIPAL
             if mandante["media_fin"] >= MANDANTE_MIN_FIN and mandante["media_esc"] >= MANDANTE_MIN_ESC and visitante["reativo"]:
                 pernas = montar_principal(mandante, visitante, odds, home_nome, away_nome)
                 if len(pernas) >= PERNAS_MIN:
+                    msg_aviso = (
+                        f"⚽ <b>RD STATS | ANÁLISE EM ANDAMENTO</b>\n\n"
+                        f"🏆 {liga_nome}\n"
+                        f"🆚 {home_nome} x {away_nome}\n"
+                        f"🕐 Hoje, {horario[11:16]}\n\n"
+                        f"🔎 Padrão identificado. Calculando valor..."
+                    )
+                    enviar_mensagem(msg_aviso)
+                    print(f"   📢 Aviso principal")
+                    time.sleep(10)
+
                     enviados.add(str(fixture_id))
                     salvar_enviados(enviados)
+
                     enviar_mensagem(msg_principal(liga_nome, home_nome, away_nome, mandante, visitante, pernas))
                     print(f"   ✅ Principal ({len(pernas)} pernas)")
-                    time.sleep(3)
+                    time.sleep(10)
 
             # 3. ENTRADA NORMAL
             valores = buscar_valor_jogo(odds)
             if valores:
+                msg_aviso_valor = (
+                    f"⚽ <b>RD STATS | ANÁLISE EM ANDAMENTO</b>\n\n"
+                    f"🏆 {liga_nome}\n"
+                    f"🆚 {home_nome} x {away_nome}\n"
+                    f"🕐 Hoje, {horario[11:16]}\n\n"
+                    f"🔎 Procurando valor no mercado..."
+                )
+                enviar_mensagem(msg_aviso_valor)
+                print(f"   📢 Aviso valor")
+                time.sleep(10)
+
                 msg, odd_f = msg_valor(liga_nome, home_nome, away_nome, valores)
                 enviar_mensagem(msg)
                 print(f"   ✅ Normal (odd {odd_f:.2f})")
-                time.sleep(3)
+                time.sleep(10)
+
                 if not bingo_ja:
                     bingo_entradas.append({
                         "home": home_nome, "away": away_nome,
@@ -844,8 +852,17 @@ def processar_jogos():
         for e in bingo_entradas:
             odd_bingo *= e["odd"]
         if odd_bingo >= ODD_BINGO_DIA:
+            msg_aviso_bingo = (
+                "🎰 <b>RD STATS | BINGO DO DIA</b>\n\n"
+                "Analisando os melhores jogos do dia...\n\n"
+                f"🎯 {len(bingo_entradas)} jogos com contexto forte"
+            )
+            enviar_mensagem(msg_aviso_bingo)
+            time.sleep(10)
+
             enviar_mensagem(msg_bingo_aviso(odd_bingo))
-            time.sleep(3)
+            time.sleep(10)
+
             msg, _ = msg_bingo(bingo_entradas)
             enviar_mensagem(msg)
             marcar_bingo_enviado()
@@ -855,6 +872,14 @@ def processar_jogos():
     if not placar_ja:
         multipla = montar_placar_multipla(jogos, dados_por_jogo)
         if multipla and len(multipla) >= PLACAR_MIN_JOGOS:
+            msg_aviso_placar = (
+                "🎯 <b>RD STATS | RESULTADO CORRETO MÚLTIPLO</b>\n\n"
+                "Analisando placares do dia...\n\n"
+                f"🎯 {len(multipla)} jogos no mesmo horário"
+            )
+            enviar_mensagem(msg_aviso_placar)
+            time.sleep(10)
+
             horario = multipla[0]["horario"]
             msg, odd_p = msg_placar(multipla, horario)
             enviar_mensagem(msg)
@@ -865,7 +890,7 @@ def processar_jogos():
     print(f"\n✅ Ciclo finalizado. Req: {REQ_COUNT}/{LIMITE_DIARIO}")
 
 # ─────────────────────────────────────────────
-# LOOP
+# LOOP PRINCIPAL
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":
