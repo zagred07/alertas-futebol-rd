@@ -12,11 +12,7 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 BASE_URL = "https://v3.football.api-sports.io"
 HEADERS = {"x-apisports-key": API_KEY}
 
-# Ligas: Brasileirão A (71), B (72), Premier League (39), La Liga (140),
-# Serie A (135), Bundesliga (78), Ligue 1 (61), Championship (40)
 LIGAS = [71, 72, 39, 140, 135, 78, 61, 40]
-
-# Bookmakers: 8 = Bet365, 2 = Pinnacle
 BOOKMAKERS = {"8": "Bet365", "2": "Pinnacle"}
 
 ARQUIVO_ENVIADOS = "jogos_enviados.json"
@@ -141,7 +137,6 @@ def processar_jogos():
         home_name = jogo["teams"]["home"]["name"]
         away_name = jogo["teams"]["away"]["name"]
 
-        # Buscar todos os jogos do mandante em casa e do visitante fora
         stats_home = []
         for j in get_jogos_do_dia():
             if j["teams"]["home"]["id"] == home_id:
@@ -168,8 +163,7 @@ def processar_jogos():
         mercados = []
         odd_final = 1.0
 
-        # Adicionar pernas com base no contexto
-        if pct_fin_away >= 0.8:
+        if pct_fin_away >= 0.7:
             odd = get_odd_mercado(odds_bet365, "Total Shots", "Over 7.5")
             if odd:
                 mercados.append(f"· {away_name} +7,5 chutes ({pct_fin_away*100:.0f}% de acerto em {len(fin_away)} jogos fora) - Odd {odd}")
@@ -177,7 +171,7 @@ def processar_jogos():
             else:
                 mercados.append(f"· {away_name} +7,5 chutes ({pct_fin_away*100:.0f}% de acerto em {len(fin_away)} jogos fora) - Odd não disponível")
 
-        if pct_chutes_away >= 0.8:
+        if pct_chutes_away >= 0.7:
             odd = get_odd_mercado(odds_bet365, "Shots on Goal", "Over 1.5")
             if odd:
                 mercados.append(f"· {away_name} +1,5 chutes ao gol ({pct_chutes_away*100:.0f}% de acerto em {len(chutes_away)} jogos fora) - Odd {odd}")
@@ -185,7 +179,7 @@ def processar_jogos():
             else:
                 mercados.append(f"· {away_name} +1,5 chutes ao gol ({pct_chutes_away*100:.0f}% de acerto em {len(chutes_away)} jogos fora) - Odd não disponível")
 
-        if pct_cart_home >= 0.9:
+        if pct_cart_home >= 0.7:
             odd = get_odd_mercado(odds_bet365, "Cards", "Over 0.5")
             if odd:
                 mercados.append(f"· {home_name} +0,5 cartões ({pct_cart_home*100:.0f}% de acerto em {len(cart_home)} jogos em casa) - Odd {odd}")
@@ -193,7 +187,6 @@ def processar_jogos():
             else:
                 mercados.append(f"· {home_name} +0,5 cartões ({pct_cart_home*100:.0f}% de acerto em {len(cart_home)} jogos em casa) - Odd não disponível")
 
-        # Complementar odd se estiver baixa
         if odd_final < 1.50 and mercados:
             odd_over05 = get_odd_mercado(odds_bet365, "Goals Over/Under", "Over 0.5")
             if odd_over05 and odd_over05 >= 1.05:
@@ -211,7 +204,6 @@ def processar_jogos():
             salvar_enviados(jogos_enviados)
 
             alertas_odd = achar_odd_errada(odds_bet365, odds_pinnacle)
-
             odd_bingo = odd_final >= 5.00
 
             enviar_mensagem(f"🔍 <b>RD Stats – Atenção</b>\n\nAnalisando {home_name} x {away_name}...\nPadrão identificado. Calculando valor.\n\n<b>Entrada em breve.</b> 🚀")
