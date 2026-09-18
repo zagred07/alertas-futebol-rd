@@ -1,8 +1,3 @@
-# =========================================================
-# RD STATS - BOT DE ANÁLISE DE FUTEBOL
-# Estratégia: Visitante Reativo
-# =========================================================
-
 import requests
 import time
 import os
@@ -10,10 +5,6 @@ from datetime import datetime
 import pytz
 import json
 import statistics
-
-# ─────────────────────────────────────────────
-# CONFIGURAÇÕES
-# ─────────────────────────────────────────────
 
 API_KEY   = os.getenv("API_FOOTBALL_KEY")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -43,10 +34,6 @@ ODD_ERRADA_MIN_ODD = 1.50
 
 INTERVALO_MIN = 30
 
-# ─────────────────────────────────────────────
-# ARQUIVO DE ENVIADOS
-# ─────────────────────────────────────────────
-
 def carregar_enviados():
     if os.path.exists(ARQUIVO_ENVIADOS):
         try:
@@ -60,10 +47,6 @@ def salvar_enviados(enviados):
     with open(ARQUIVO_ENVIADOS, "w") as f:
         json.dump(list(enviados), f)
 
-# ─────────────────────────────────────────────
-# TELEGRAM
-# ─────────────────────────────────────────────
-
 def enviar_mensagem(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
@@ -76,10 +59,6 @@ def enviar_mensagem(msg):
         requests.post(url, data=payload, timeout=15)
     except Exception as e:
         print(f"Erro Telegram: {e}")
-
-# ─────────────────────────────────────────────
-# API
-# ─────────────────────────────────────────────
 
 def api_get(endpoint, params=None):
     url = f"{BASE_URL}/{endpoint}"
@@ -126,10 +105,6 @@ def get_odds_fixture(fixture_id):
     resp = api_get("odds", {"fixture": fixture_id})
     return resp if resp else []
 
-# ─────────────────────────────────────────────
-# EXTRAÇÃO DE STATS
-# ─────────────────────────────────────────────
-
 def extrair_stats_jogo(stats, team_id):
     res = {"finalizacoes": 0, "chutes_gol": 0, "cartoes": 0, "escanteios": 0, "gols": 0}
     if not stats:
@@ -163,10 +138,6 @@ def get_gols_sofridos(jogo, team_id):
     else:
         return jogo["goals"]["home"] or 0
 
-# ─────────────────────────────────────────────
-# ANÁLISE DO MANDANTE (CASA)
-# ─────────────────────────────────────────────
-
 def analisar_mandante(jogos, team_id):
     if not jogos:
         return None
@@ -195,10 +166,6 @@ def mandante_e_agressivo(m):
         return False
     return (m["media_fin"] >= MANDANTE_MIN_FIN and
             m["media_esc"] >= MANDANTE_MIN_ESC)
-
-# ─────────────────────────────────────────────
-# ANÁLISE DO VISITANTE (FORA) - REATIVO
-# ─────────────────────────────────────────────
 
 def analisar_visitante(jogos, team_id):
     if not jogos:
@@ -248,21 +215,12 @@ def analisar_visitante(jogos, team_id):
         "lista_cartoes": cartoes,
     }
 
-# ─────────────────────────────────────────────
-# TAXA DE ACERTO
-# ─────────────────────────────────────────────
-
 def taxa_acerto(lista, linha):
     if not lista:
         return 0
     return sum(1 for v in lista if v >= linha) / len(lista)
 
-# ─────────────────────────────────────────────
-# ODDS
-# ─────────────────────────────────────────────
-
 def extrair_odds(odds_data):
-    """Retorna dict: {bookmaker_id: {bet_id: [(value, odd), ...]}}"""
     resultado = {}
     if not odds_data:
         return resultado
@@ -298,7 +256,6 @@ def media_outras_casas(odds_dict, bet_id, valor_alvo):
     return statistics.mean(odds)
 
 def detectar_odd_errada(odds_dict, bet_id, valor_alvo, nome_mercado):
-    """Retorna dict com info de odd errada ou None."""
     odd_bet365 = get_odd(odds_dict, BET365_ID, bet_id, valor_alvo)
     if not odd_bet365 or odd_bet365 < ODD_ERRADA_MIN_ODD:
         return None
@@ -315,11 +272,6 @@ def detectar_odd_errada(odds_dict, bet_id, valor_alvo, nome_mercado):
         }
     return None
 
-# ─────────────────────────────────────────────
-# MERCADOS - MAPEAMENTO
-# ─────────────────────────────────────────────
-
-# IDs da API
 BET_GOALS        = 5
 BET_BTTS         = 8
 BET_CORNERS      = 45
@@ -329,15 +281,9 @@ BET_AWAY_CARDS   = 83
 BET_SHOTS_ON_TGT = 87
 BET_TOTAL_SHOTS  = 211
 
-# ─────────────────────────────────────────────
-# MONTAGEM DA ENTRADA
-# ─────────────────────────────────────────────
-
 def montar_pernas(mandante, visitante, odds_dict):
-    """Monta lista de pernas com base nas taxas 70%+ e odds disponíveis."""
     pernas = []
 
-    # 1) FINALIZAÇÕES DO VISITANTE (contexto, sem odd Bet365)
     if visitante:
         for linha in [8.5, 7.5]:
             taxa = taxa_acerto(visitante["lista_fin"], linha)
@@ -350,7 +296,6 @@ def montar_pernas(mandante, visitante, odds_dict):
                 })
                 break
 
-    # 2) CHUTES AO GOL DO VISITANTE (contexto, sem odd Bet365)
     if visitante:
         for linha in [2.5, 1.5]:
             taxa = taxa_acerto(visitante["lista_chutes_gol"], linha)
@@ -363,7 +308,6 @@ def montar_pernas(mandante, visitante, odds_dict):
                 })
                 break
 
-    # 3) CARTÕES DO MANDANTE (com odd Bet365)
     if mandante:
         for linha in [1.5, 0.5]:
             taxa = taxa_acerto(mandante["lista_cart"], linha)
@@ -381,7 +325,6 @@ def montar_pernas(mandante, visitante, odds_dict):
                     })
                 break
 
-    # 4) ESCANTEIOS DO MANDANTE (com odd Bet365)
     if mandante:
         for linha in [4.5, 3.5]:
             taxa = taxa_acerto(mandante["lista_esc"], linha)
@@ -389,7 +332,7 @@ def montar_pernas(mandante, visitante, odds_dict):
                 valor = f"Over {linha}"
                 odd = get_odd(odds_dict, BET365_ID, BET_CORNERS, valor)
                 if not odd:
-                    odd = get_odd(odds_dict, BET365_ID, 57, valor)  # Home Corners
+                    odd = get_odd(odds_dict, BET365_ID, 57, valor)
                 if odd:
                     pernas.append({
                         "nome": f"Mandante Over {linha} escanteios",
@@ -401,7 +344,6 @@ def montar_pernas(mandante, visitante, odds_dict):
                     })
                 break
 
-    # 5) CARTÕES TOTAIS (com odd Bet365)
     if mandante and visitante:
         media_cart_total = mandante["media_cart"] + visitante["media_cart"]
         if media_cart_total >= 3.5:
@@ -417,7 +359,6 @@ def montar_pernas(mandante, visitante, odds_dict):
                     "tipo": "odd"
                 })
 
-    # 6) AMBAS MARCAM (com odd Bet365) - se contexto ofensivo
     if mandante and visitante:
         if mandante["media_fin"] >= 12 and visitante["media_fin"] >= 8:
             odd = get_odd(odds_dict, BET365_ID, BET_BTTS, "Yes")
@@ -434,33 +375,25 @@ def montar_pernas(mandante, visitante, odds_dict):
     return pernas
 
 def montar_entrada_final(pernas):
-    """Seleciona pernas pra montar entrada (2-4 pernas), prioriza as com odd."""
     com_odd = [p for p in pernas if p.get("odd")]
     contexto = [p for p in pernas if not p.get("odd")]
 
     if not com_odd:
         return None, None, contexto
 
-    # Pega até 4 pernas com odd
     selecionadas = com_odd[:PERNAS_MAX]
 
     odd_final = 1.0
     for p in selecionadas:
         odd_final *= p["odd"]
 
-    # Se odd < 1.50, adiciona mais perna do contexto de gols
     if odd_final < ODD_MIN_FINAL:
-        # Tenta adicionar Over 0.5 ou 1.5 gols
         extra = next((p for p in com_odd if p["nome"] not in [s["nome"] for s in selecionadas]), None)
         if extra:
             selecionadas.append(extra)
             odd_final *= extra["odd"]
 
     return selecionadas, odd_final, contexto
-
-# ─────────────────────────────────────────────
-# FORMATAÇÃO DAS MENSAGENS
-# ─────────────────────────────────────────────
 
 def fmt_moeda(v):
     return f"{v:.2f}"
@@ -551,10 +484,6 @@ def calcular_confianca(pernas):
         return pct, "MÉDIA"
     return pct, "BAIXA"
 
-# ─────────────────────────────────────────────
-# PROCESSAMENTO PRINCIPAL
-# ─────────────────────────────────────────────
-
 def processar_jogos():
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Iniciando análise...")
     enviados = carregar_enviados()
@@ -578,7 +507,6 @@ def processar_jogos():
 
         print(f"\n→ Analisando {home_name} x {away_name}...")
 
-        # Histórico
         jogos_casa = get_jogos_time(home_id, liga_id, casa=True)
         jogos_fora = get_jogos_time(away_id, liga_id, casa=False)
 
@@ -593,7 +521,6 @@ def processar_jogos():
             print("   Erro ao analisar.")
             continue
 
-        # Verifica padrão
         if not mandante_e_agressivo(mandante):
             print(f"   Mandante não agressivo (fin {mandante['media_fin']:.1f}, esc {mandante['media_esc']:.1f})")
             continue
@@ -602,9 +529,8 @@ def processar_jogos():
             print(f"   Visitante não reativo (perdendo {visitante['media_fin_perdendo']:.1f} x geral {visitante['media_fin']:.1f})")
             continue
 
-        print(f"   ✅ PADRÃO OK! Mandante agressivo + Visitante reativo")
+        print(f"   PADRAO OK! Mandante agressivo + Visitante reativo")
 
-        # Busca odds
         odds_data = get_odds_fixture(fixture_id)
         odds_dict = extrair_odds(odds_data)
 
@@ -612,7 +538,6 @@ def processar_jogos():
             print("   Sem odds da Bet365.")
             continue
 
-        # Monta pernas
         pernas = montar_pernas(mandante, visitante, odds_dict)
         selecionadas, odd_final, contexto = montar_entrada_final(pernas)
 
@@ -623,22 +548,17 @@ def processar_jogos():
         if odd_final < ODD_MIN_FINAL:
             print(f"   Odd final baixa: {odd_final:.2f}")
             continue
-        # Marca como enviado ANTES de enviar
+
         enviados.add(str(fixture_id))
         salvar_enviados(enviados)
 
-        # ─── ENVIO DAS MENSAGENS ───
-
-        # 1) Aviso de análise
         enviar_mensagem(montar_msg_analise(liga_nome, home_name, away_name))
         time.sleep(5)
 
-        # 2) BINGO
         if odd_final >= ODD_BINGO:
             enviar_mensagem(montar_msg_bingo(odd_final))
             time.sleep(3)
 
-        # 3) Odd errada
         alertas_odd = []
         for p in selecionadas:
             if p.get("bet_id") and p.get("valor"):
@@ -649,19 +569,14 @@ def processar_jogos():
             enviar_mensagem(montar_msg_odd_errada(liga_nome, home_name, away_name, alertas_odd))
             time.sleep(3)
 
-        # 4) Entrada final
         pct, nivel = calcular_confianca(selecionadas + contexto)
         enviar_mensagem(montar_msg_entrada(liga_nome, home_name, away_name, selecionadas, contexto, odd_final, nivel, pct))
-        print(f"   ✅ Entrada enviada (odd {odd_final:.2f})")
+        print(f"   Entrada enviada (odd {odd_final:.2f})")
 
         time.sleep(2)
 
-# ─────────────────────────────────────────────
-# LOOP PRINCIPAL
-# ─────────────────────────────────────────────
-
 if __name__ == "__main__":
-    print("🚀 RD Stats iniciado.")
+    print("RD Stats iniciado.")
     while True:
         agora = datetime.now(pytz.timezone("America/Sao_Paulo"))
         if 8 <= agora.hour < 23:
@@ -669,11 +584,8 @@ if __name__ == "__main__":
                 processar_jogos()
             except Exception as e:
                 print(f"Erro no ciclo: {e}")
-            print(f"\n⏳ Aguardando {INTERVALO_MIN} minutos...")
+            print(f"\nAguardando {INTERVALO_MIN} minutos...")
             time.sleep(INTERVALO_MIN * 60)
         else:
-            print(f"[{agora.strftime('%H:%M')}] Fora do horário. Dormindo 1h...")
+            print(f"[{agora.strftime('%H:%M')}] Fora do horario. Dormindo 1h...")
             time.sleep(3600)
-```
-
-        
