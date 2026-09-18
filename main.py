@@ -623,9 +623,57 @@ def processar_jogos():
         if odd_final < ODD_MIN_FINAL:
             print(f"   Odd final baixa: {odd_final:.2f}")
             continue
-
         # Marca como enviado ANTES de enviar
         enviados.add(str(fixture_id))
         salvar_enviados(enviados)
 
-        # ─── E
+        # ─── ENVIO DAS MENSAGENS ───
+
+        # 1) Aviso de análise
+        enviar_mensagem(montar_msg_analise(liga_nome, home_name, away_name))
+        time.sleep(5)
+
+        # 2) BINGO
+        if odd_final >= ODD_BINGO:
+            enviar_mensagem(montar_msg_bingo(odd_final))
+            time.sleep(3)
+
+        # 3) Odd errada
+        alertas_odd = []
+        for p in selecionadas:
+            if p.get("bet_id") and p.get("valor"):
+                a = detectar_odd_errada(odds_dict, p["bet_id"], p["valor"], p["nome"])
+                if a:
+                    alertas_odd.append(a)
+        if alertas_odd:
+            enviar_mensagem(montar_msg_odd_errada(liga_nome, home_name, away_name, alertas_odd))
+            time.sleep(3)
+
+        # 4) Entrada final
+        pct, nivel = calcular_confianca(selecionadas + contexto)
+        enviar_mensagem(montar_msg_entrada(liga_nome, home_name, away_name, selecionadas, contexto, odd_final, nivel, pct))
+        print(f"   ✅ Entrada enviada (odd {odd_final:.2f})")
+
+        time.sleep(2)
+
+# ─────────────────────────────────────────────
+# LOOP PRINCIPAL
+# ─────────────────────────────────────────────
+
+if __name__ == "__main__":
+    print("🚀 RD Stats iniciado.")
+    while True:
+        agora = datetime.now(pytz.timezone("America/Sao_Paulo"))
+        if 8 <= agora.hour < 23:
+            try:
+                processar_jogos()
+            except Exception as e:
+                print(f"Erro no ciclo: {e}")
+            print(f"\n⏳ Aguardando {INTERVALO_MIN} minutos...")
+            time.sleep(INTERVALO_MIN * 60)
+        else:
+            print(f"[{agora.strftime('%H:%M')}] Fora do horário. Dormindo 1h...")
+            time.sleep(3600)
+```
+
+        
