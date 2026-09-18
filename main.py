@@ -163,41 +163,29 @@ def processar_jogos():
         mercados = []
         odd_final = 1.0
 
+        # Adiciona pernas de estatísticas (sem odd, mas com contexto)
         if pct_fin_away >= 0.7:
-            odd = get_odd_mercado(odds_bet365, "Total Shots", "Over 7.5")
-            if odd:
-                mercados.append(f"· {away_name} +7,5 chutes ({pct_fin_away*100:.0f}% de acerto em {len(fin_away)} jogos fora) - Odd {odd}")
-                odd_final *= odd
-            else:
-                mercados.append(f"· {away_name} +7,5 chutes ({pct_fin_away*100:.0f}% de acerto em {len(fin_away)} jogos fora) - Odd não disponível")
-
+            mercados.append(f"· {away_name} +7,5 chutes ({pct_fin_away*100:.0f}% de acerto em {len(fin_away)} jogos fora) - Odd não disponível")
         if pct_chutes_away >= 0.7:
-            odd = get_odd_mercado(odds_bet365, "Shots on Goal", "Over 1.5")
-            if odd:
-                mercados.append(f"· {away_name} +1,5 chutes ao gol ({pct_chutes_away*100:.0f}% de acerto em {len(chutes_away)} jogos fora) - Odd {odd}")
-                odd_final *= odd
-            else:
-                mercados.append(f"· {away_name} +1,5 chutes ao gol ({pct_chutes_away*100:.0f}% de acerto em {len(chutes_away)} jogos fora) - Odd não disponível")
-
+            mercados.append(f"· {away_name} +1,5 chutes ao gol ({pct_chutes_away*100:.0f}% de acerto em {len(chutes_away)} jogos fora) - Odd não disponível")
         if pct_cart_home >= 0.7:
-            odd = get_odd_mercado(odds_bet365, "Cards", "Over 0.5")
-            if odd:
-                mercados.append(f"· {home_name} +0,5 cartões ({pct_cart_home*100:.0f}% de acerto em {len(cart_home)} jogos em casa) - Odd {odd}")
-                odd_final *= odd
-            else:
-                mercados.append(f"· {home_name} +0,5 cartões ({pct_cart_home*100:.0f}% de acerto em {len(cart_home)} jogos em casa) - Odd não disponível")
+            mercados.append(f"· {home_name} +0,5 cartões ({pct_cart_home*100:.0f}% de acerto em {len(cart_home)} jogos em casa) - Odd não disponível")
 
-        if odd_final < 1.50 and mercados:
-            odd_over05 = get_odd_mercado(odds_bet365, "Goals Over/Under", "Over 0.5")
-            if odd_over05 and odd_over05 >= 1.05:
-                mercados.append(f"· Mais de 0,5 gols na partida - Odd {odd_over05}")
-                odd_final *= odd_over05
+        # Adiciona pernas com odd disponível (1X2, gols, ambas marcam, cartões totais)
+        odd_over05 = get_odd_mercado(odds_bet365, "Goals Over/Under", "Over 0.5")
+        if odd_over05 and odd_over05 >= 1.05:
+            mercados.append(f"· Mais de 0,5 gols na partida - Odd {odd_over05}")
+            odd_final *= odd_over05
 
-        if odd_final < 1.50 and mercados:
-            odd_btts = get_odd_mercado(odds_bet365, "Both Teams Score", "Yes")
-            if odd_btts:
-                mercados.append(f"· Ambas marcam - Odd {odd_btts}")
-                odd_final *= odd_btts
+        odd_btts = get_odd_mercado(odds_bet365, "Both Teams Score", "Yes")
+        if odd_btts and odd_btts >= 1.50:
+            mercados.append(f"· Ambas marcam - Odd {odd_btts}")
+            odd_final *= odd_btts
+
+        odd_over15 = get_odd_mercado(odds_bet365, "Goals Over/Under", "Over 1.5")
+        if odd_over15 and odd_over15 >= 1.50:
+            mercados.append(f"· Mais de 1,5 gols na partida - Odd {odd_over15}")
+            odd_final *= odd_over15
 
         if mercados and odd_final >= 1.50:
             jogos_enviados.add(str(fixture_id))
