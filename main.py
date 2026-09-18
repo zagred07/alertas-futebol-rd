@@ -14,7 +14,10 @@ HEADERS = {"x-apisports-key": API_KEY}
 # IDs das ligas: 71 = Série A, 72 = Série B
 LIGAS = [71, 72]
 
-def enviar_alerta(mensagem):
+# IDs das casas de apostas: 8 = Bet365, 2 = Pinnacle
+BOOKMAKERS = {"8": "Bet365", "2": "Pinnacle"}
+
+def enviar_mensagem(mensagem):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": mensagem, "parse_mode": "HTML"}
     requests.post(url, data=payload)
@@ -29,15 +32,12 @@ def get_jogos_do_dia():
             jogos.extend(resp.json().get("response", []))
     return jogos
 
-def get_ultimos_jogos(team_id, local):
-    # local = "home" ou "away"
-    url = f"{BASE_URL}/fixtures?team={team_id}&last=10"
+def get_jogos_time(team_id, season=2026):
+    url = f"{BASE_URL}/fixtures?team={team_id}&season={season}"
     resp = requests.get(url, headers=HEADERS)
     if resp.status_code != 200:
         return []
-    jogos = resp.json().get("response", [])
-    # Filtrar por local
-    return [j for j in jogos if j["fixture"]["venue"]["city"] == local]
+    return resp.json().get("response", [])
 
 def get_stats_fixture(fixture_id):
     url = f"{BASE_URL}/fixtures/statistics?fixture={fixture_id}"
@@ -46,10 +46,18 @@ def get_stats_fixture(fixture_id):
         return None
     return resp.json().get("response", [])
 
+def get_odds_fixture(fixture_id):
+    url = f"{BASE_URL}/odds?fixture={fixture_id}"
+    resp = requests.get(url, headers=HEADERS)
+    if resp.status_code != 200:
+        return []
+    return resp.json().get("response", [])
+
 def calcular_padroes(stats_list, team_id):
     finalizacoes = []
     chutes_gol = []
     cartoes = []
+    escanteios = []
     for stats in stats_list:
         for team_stats in stats:
             if team_stats["team"]["id"] == team_id:
@@ -60,66 +68,103 @@ def calcular_padroes(stats_list, team_id):
                         chutes_gol.append(stat["value"])
                     if stat["type"] == "Yellow Cards" and isinstance(stat["value"], int):
                         cartoes.append(stat["value"])
-    return finalizacoes, chutes_gol, cartoes
+                    if stat["type"] == "Corner Kicks" and isinstance(stat["value"], int):
+                        escanteios.append(stat["value"])
+    return finalizacoes, chutes_gol, cartoes, escanteios
 
 def percentual_acerto(lista, linha):
     if not lista:
         return 0
     return sum(1 for v in lista if v >= linha) / len(lista)
 
+def comparar_odds(odds_data, fixture_id):
+    odds_bet365 = {}
+    odds_pinnacle = {}
+    for odd in odds_data:
+        bookmaker = odd.get("bookmaker", {}).get("id")
+        bets = odd.get("bets", [])
+        for bet in bets:
+            nome = bet.get("name")
+            valores = bet.get("values", [])
+            if bookmaker == 8:
+                odds_bet365[nome] = valores
+            elif bookmaker == 2:
+                odds_pinnacle[nome] = valores
+    return odds_bet365, odds_pinnacle
+
 def processar_jogos():
     jogos = get_jogos_do_dia()
     for jogo in jogos:
-        # Ignorar jogos que já começaram
         if jogo["fixture"]["status"]["short"] != "NS":
             continue
         home_id = jogo["teams"]["home"]["id"]
         away_id = jogo["teams"]["away"]["id"]
         home_name = jogo["teams"]["home"]["name"]
         away_name = jogo["teams"]["away"]["name"]
+        fixture_id = jogo["fixture"]["id"]
 
-        # Buscar últimos 10 jogos do mandante em casa
-        jogos_home = get_ultimos_jogos(home_id, "home")
-        stats_home = [get_stats_fixture(j["fixture"]["id"]) for j in jogos_home]
-        stats_home = [s for s in stats_home if s]
+        # Buscar todos os jogos do mandante em casa e do visitante fora
+        jogos_home = get_jogos_time(home_id)
+        jogos_away = get_jogos_time(away_id)
 
-        # Buscar últimos 10 jogos do visitante fora
-        jogos_away = get_ultimos_jogos(away_id, "away")
-        stats_away = [get_stats_fixture(j["fixture"]["id"]) for j in jogos_away]
-        stats_away = [s for s in stats_away if s]
+        stats_home = []
+        for j in jogos_home:
+            if j["teams"]["home"]["id"] == home_id:
+                stats = get_stats_fixture(j["fixture"]["id"])
+                if stats:
+                    stats_home.append(stats)
+
+        stats_away = []
+        for j in jogos_away:
+            if j["teams"]["away"]["id"] == away_id:
+                stats = get_stats_fixture(j["fixture"]["id"])
+                if stats:
+                    stats_away.append(stats)
 
         # Calcular padrões
-        fin_home, chutes_home, cart_home = calcular_padroes(stats_home, home_id)
-        fin_away, chutes_away, cart_away = calcular_padroes(stats_away, away_id)
+        fin_home, chutes_home, cart_home, esc_home = calcular_padroes(stats_home, home_id)
+        fin_away, chutes_away, cart_away, esc_away = calcular_padroes(stats_away, away_id)
 
-        # Percentuais do visitante
-        pct_fin_away = percentual_acerto(fin_away, 8)  # +7,5
-        pct_chutes_away = percentual_acerto(chutes_away, 2)  # +1,5
-        pct_cart_away = percentual_acerto(cart_away, 1)  # +0,5
+        # Taxas de acerto
+        pct_fin_away = percentual_acerto(fin_away, 8)
+        pct_chutes_away = percentual_acerto(chutes_away, 2)
+        pct_cart_home = percentual_acerto(cart_home, 1)
+        pct_esc_home = percentual_acerto(esc_home, 4)
 
-        # Percentuais do mandante
-        pct_fin_home = percentual_acerto(fin_home, 8)  # +7,5
-        pct_cart_home = percentual_acerto(cart_home, 1)  # +0,5
+        # Buscar odds
+        odds_data = get_odds_fixture(fixture_id)
+        odds_bet365, odds_pinnacle = comparar_odds(odds_data, fixture_id)
 
-        # Cruzamento: se o mandante é agressivo e o visitante é reativo
-        if pct_fin_away >= 0.8 and pct_chutes_away >= 0.8 and pct_cart_home >= 0.9:
+        # Montar entrada
+        mercados = []
+        if pct_fin_away >= 0.8:
+            mercados.append(f"· {away_name} +7,5 chutes ({pct_fin_away*100:.0f}% de acerto em {len(fin_away)} jogos fora)")
+        if pct_chutes_away >= 0.8:
+            mercados.append(f"· {away_name} +1,5 chutes ao gol ({pct_chutes_away*100:.0f}% de acerto em {len(chutes_away)} jogos fora)")
+        if pct_cart_home >= 0.9:
+            mercados.append(f"· {home_name} +0,5 cartões ({pct_cart_home*100:.0f}% de acerto em {len(cart_home)} jogos em casa)")
+        if pct_esc_home >= 0.8:
+            mercados.append(f"· {home_name} +3,5 escanteios ({pct_esc_home*100:.0f}% de acerto em {len(esc_home)} jogos em casa)")
+
+        if mercados:
+            # Mensagem de aquecimento
+            enviar_mensagem(f"🔍 <b>RD Stats – Atenção</b>\n\nAnalisando {home_name} x {away_name}...\nPadrão identificado. Calculando valor.\n\n<b>Entrada em breve.</b> 🚀")
+            time.sleep(5)
+
+            # Mensagem de entrada
             msg = f"🧠 <b>RD Stats – Entrada</b>\n\n"
             msg += f"<b>Jogo:</b> {home_name} x {away_name}\n\n"
-            msg += f"<b>Mercados:</b>\n"
-            msg += f"· {away_name} +7,5 chutes ({pct_fin_away*100:.0f}% de acerto)\n"
-            msg += f"· {away_name} +1,5 chutes ao gol ({pct_chutes_away*100:.0f}% de acerto)\n"
-            msg += f"· {home_name} +0,5 cartões ({pct_cart_home*100:.0f}% de acerto)\n\n"
-            msg += f"<b>Contexto:</b> O {home_name} é agressivo em casa e o {away_name} é reativo fora. O visitante finaliza 8+ em {pct_fin_away*100:.0f}% dos jogos e chuta 2+ no gol em {pct_chutes_away*100:.0f}%.\n\n"
+            msg += f"<b>Mercados:</b>\n" + "\n".join(mercados) + "\n\n"
+            msg += f"<b>Contexto:</b> O {home_name} é agressivo em casa e o {away_name} é reativo fora.\n\n"
             msg += f"Cada um sabe o que faz com a informação. 🚀"
-            enviar_alerta(msg)
+            enviar_mensagem(msg)
 
 if __name__ == "__main__":
     fuso = pytz.timezone("America/Sao_Paulo")
     while True:
         agora = datetime.now(fuso)
-        # Roda das 8h às 22h, a cada 30 minutos
         if 8 <= agora.hour < 22:
             processar_jogos()
-            time.sleep(1800)  # 30 minutos
+            time.sleep(1800)
         else:
-            time.sleep(3600)  # 1 hora fora do horário
+            time.sleep(3600)
