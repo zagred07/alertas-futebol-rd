@@ -3,6 +3,7 @@ import time
 import os
 from datetime import datetime
 import pytz
+import json
 
 API_KEY = os.getenv("API_FOOTBALL_KEY")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -14,8 +15,17 @@ HEADERS = {"x-apisports-key": API_KEY}
 LIGAS = [71, 72]
 BOOKMAKERS = {"8": "Bet365", "2": "Pinnacle"}
 
-# Memória de jogos já enviados
-jogos_enviados = set()
+ARQUIVO_ENVIADOS = "jogos_enviados.json"
+
+def carregar_enviados():
+    if os.path.exists(ARQUIVO_ENVIADOS):
+        with open(ARQUIVO_ENVIADOS, "r") as f:
+            return set(json.load(f))
+    return set()
+
+def salvar_enviados(enviados):
+    with open(ARQUIVO_ENVIADOS, "w") as f:
+        json.dump(list(enviados), f)
 
 def enviar_mensagem(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -101,6 +111,7 @@ def achar_odd_errada(odds_bet365, odds_pinnacle):
     return alertas
 
 def processar_jogos():
+    jogos_enviados = carregar_enviados()
     jogos = get_jogos_do_dia()
     for jogo in jogos:
         if jogo["fixture"]["status"]["short"] != "NS":
@@ -108,8 +119,7 @@ def processar_jogos():
 
         fixture_id = jogo["fixture"]["id"]
 
-        # Se já enviou esse jogo, pula
-        if fixture_id in jogos_enviados:
+        if str(fixture_id) in jogos_enviados:
             continue
 
         home_id = jogo["teams"]["home"]["id"]
@@ -151,12 +161,11 @@ def processar_jogos():
             mercados.append(f"· {home_name} +3,5 escanteios ({pct_esc_home*100:.0f}% de acerto em {len(esc_home)} jogos em casa)")
 
         if mercados:
-            # Marca como enviado
-            jogos_enviados.add(fixture_id)
+            jogos_enviados.add(str(fixture_id))
+            salvar_enviados(jogos_enviados)
 
             alertas_odd = achar_odd_errada(odds_bet365, odds_pinnacle)
 
-            # Verificar se é bingo (odd alta)
             odd_bingo = False
             if odds_bet365:
                 for mercado in odds_bet365:
@@ -171,7 +180,7 @@ def processar_jogos():
             time.sleep(5)
 
             if odd_bingo:
-                enviar_mensagem(f"🎯 <b>RD Stats – BINGO</b>\n\nOdd alta encontrada com contexto forte!\nEntrada de alto risco e alto retorno.\n\nCada um sabe o que faz com a informação. 🚀")
+                enviar_mensagem(f"🎯 <b>RD Stats – BINGO</b>\n\nOdd alta encontrada com contexto forte!\n\nCada um sabe o que faz com a informação. 🚀")
                 time.sleep(3)
 
             if alertas_odd:
