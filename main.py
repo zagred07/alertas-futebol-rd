@@ -110,6 +110,16 @@ def achar_odd_errada(odds_bet365, odds_pinnacle):
                             pass
     return alertas
 
+def get_odd_mercado(odds_bet365, nome_mercado, valor_mercado):
+    if nome_mercado in odds_bet365:
+        for v in odds_bet365[nome_mercado]:
+            if v.get("value") == valor_mercado:
+                try:
+                    return float(v.get("odd", 0))
+                except:
+                    return None
+    return None
+
 def processar_jogos():
     jogos_enviados = carregar_enviados()
     jogos = get_jogos_do_dia()
@@ -151,36 +161,61 @@ def processar_jogos():
         odds_bet365, odds_pinnacle = comparar_odds(odds_data)
 
         mercados = []
-        if pct_fin_away >= 0.8:
-            mercados.append(f"· {away_name} +7,5 chutes ({pct_fin_away*100:.0f}% de acerto em {len(fin_away)} jogos fora)")
-        if pct_chutes_away >= 0.8:
-            mercados.append(f"· {away_name} +1,5 chutes ao gol ({pct_chutes_away*100:.0f}% de acerto em {len(chutes_away)} jogos fora)")
-        if pct_cart_home >= 0.9:
-            mercados.append(f"· {home_name} +0,5 cartões ({pct_cart_home*100:.0f}% de acerto em {len(cart_home)} jogos em casa)")
-        if pct_esc_home >= 0.8:
-            mercados.append(f"· {home_name} +3,5 escanteios ({pct_esc_home*100:.0f}% de acerto em {len(esc_home)} jogos em casa)")
+        odd_final = 1.0
 
-        if mercados:
+        # Adiciona pernas com base no contexto
+        if pct_fin_away >= 0.8:
+            odd = get_odd_mercado(odds_bet365, "Total Shots", "Over 7.5")
+            if odd:
+                mercados.append(f"· {away_name} +7,5 chutes ({pct_fin_away*100:.0f}% de acerto em {len(fin_away)} jogos fora) - Odd {odd}")
+                odd_final *= odd
+            else:
+                mercados.append(f"· {away_name} +7,5 chutes ({pct_fin_away*100:.0f}% de acerto em {len(fin_away)} jogos fora) - Odd não disponível")
+
+        if pct_chutes_away >= 0.8:
+            odd = get_odd_mercado(odds_bet365, "Shots on Goal", "Over 1.5")
+            if odd:
+                mercados.append(f"· {away_name} +1,5 chutes ao gol ({pct_chutes_away*100:.0f}% de acerto em {len(chutes_away)} jogos fora) - Odd {odd}")
+                odd_final *= odd
+            else:
+                mercados.append(f"· {away_name} +1,5 chutes ao gol ({pct_chutes_away*100:.0f}% de acerto em {len(chutes_away)} jogos fora) - Odd não disponível")
+
+        if pct_cart_home >= 0.9:
+            odd = get_odd_mercado(odds_bet365, "Cards", "Over 0.5")
+            if odd:
+                mercados.append(f"· {home_name} +0,5 cartões ({pct_cart_home*100:.0f}% de acerto em {len(cart_home)} jogos em casa) - Odd {odd}")
+                odd_final *= odd
+            else:
+                mercados.append(f"· {home_name} +0,5 cartões ({pct_cart_home*100:.0f}% de acerto em {len(cart_home)} jogos em casa) - Odd não disponível")
+
+        # Complementar odd se estiver baixa
+        if odd_final < 1.50 and mercados:
+            # Tentar adicionar Over 0,5 gols
+            odd_over05 = get_odd_mercado(odds_bet365, "Goals Over/Under", "Over 0.5")
+            if odd_over05 and odd_over05 >= 1.05:
+                mercados.append(f"· Mais de 0,5 gols na partida - Odd {odd_over05}")
+                odd_final *= odd_over05
+
+        if odd_final < 1.50 and mercados:
+            # Tentar adicionar Ambas Marcam
+            odd_btts = get_odd_mercado(odds_bet365, "Both Teams Score", "Yes")
+            if odd_btts:
+                mercados.append(f"· Ambas marcam - Odd {odd_btts}")
+                odd_final *= odd_btts
+
+        if mercados and odd_final >= 1.50:
             jogos_enviados.add(str(fixture_id))
             salvar_enviados(jogos_enviados)
 
             alertas_odd = achar_odd_errada(odds_bet365, odds_pinnacle)
 
-            odd_bingo = False
-            if odds_bet365:
-                for mercado in odds_bet365:
-                    for v in odds_bet365[mercado]:
-                        try:
-                            if float(v.get("odd", 0)) >= 5.00:
-                                odd_bingo = True
-                        except:
-                            pass
+            odd_bingo = odd_final >= 5.00
 
             enviar_mensagem(f"🔍 <b>RD Stats – Atenção</b>\n\nAnalisando {home_name} x {away_name}...\nPadrão identificado. Calculando valor.\n\n<b>Entrada em breve.</b> 🚀")
             time.sleep(5)
 
             if odd_bingo:
-                enviar_mensagem(f"🎯 <b>RD Stats – BINGO</b>\n\nOdd alta encontrada com contexto forte!\n\nCada um sabe o que faz com a informação. 🚀")
+                enviar_mensagem(f"🎯 <b>RD Stats – BINGO</b>\n\nOdd final {odd_final:.2f} com contexto forte!\n\nCada um sabe o que faz com a informação. 🚀")
                 time.sleep(3)
 
             if alertas_odd:
@@ -190,6 +225,7 @@ def processar_jogos():
             msg = f"🧠 <b>RD Stats – Entrada</b>\n\n"
             msg += f"<b>Jogo:</b> {home_name} x {away_name}\n\n"
             msg += f"<b>Mercados:</b>\n" + "\n".join(mercados) + "\n\n"
+            msg += f"<b>Odd Final:</b> {odd_final:.2f}\n\n"
             msg += f"<b>Contexto:</b> O {home_name} é agressivo em casa e o {away_name} é reativo fora.\n\n"
             msg += f"Cada um sabe o que faz com a informação. 🚀"
             enviar_mensagem(msg)
