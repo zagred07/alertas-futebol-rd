@@ -11,82 +11,115 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 BASE_URL = "https://v3.football.api-sports.io"
 HEADERS = {"x-apisports-key": API_KEY}
 
-# Para evitar alertas repetidos
-alertas_enviados = set()
+# IDs das ligas: 71 = Série A, 72 = Série B
+LIGAS = [71, 72]
 
 def enviar_alerta(mensagem):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": mensagem, "parse_mode": "HTML"}
     requests.post(url, data=payload)
 
-def get_jogos_ao_vivo():
-    url = f"{BASE_URL}/fixtures?live=all"
+def get_jogos_do_dia():
+    hoje = datetime.now(pytz.timezone("America/Sao_Paulo")).strftime("%Y-%m-%d")
+    jogos = []
+    for liga in LIGAS:
+        url = f"{BASE_URL}/fixtures?date={hoje}&league={liga}&season=2026"
+        resp = requests.get(url, headers=HEADERS)
+        if resp.status_code == 200:
+            jogos.extend(resp.json().get("response", []))
+    return jogos
+
+def get_ultimos_jogos(team_id, local):
+    # local = "home" ou "away"
+    url = f"{BASE_URL}/fixtures?team={team_id}&last=10"
     resp = requests.get(url, headers=HEADERS)
-    if resp.status_code == 200:
-        return resp.json().get("response", [])
-    return []
+    if resp.status_code != 200:
+        return []
+    jogos = resp.json().get("response", [])
+    # Filtrar por local
+    return [j for j in jogos if j["fixture"]["venue"]["city"] == local]
 
-def processar_alertas():
-    jogos = get_jogos_ao_vivo()
-    for jogo in jogos:
-        fixture_id = jogo["fixture"]["id"]
-        minuto = jogo["fixture"]["status"]["elapsed"] or 0
-        home = jogo["teams"]["home"]["name"]
-        away = jogo["teams"]["away"]["name"]
-        gols_home = jogo["goals"]["home"]
-        gols_away = jogo["goals"]["away"]
+def get_stats_fixture(fixture_id):
+    url = f"{BASE_URL}/fixtures/statistics?fixture={fixture_id}"
+    resp = requests.get(url, headers=HEADERS)
+    if resp.status_code != 200:
+        return None
+    return resp.json().get("response", [])
 
-        # Odds (se existirem)
-        odds = None
-        try:
-            odds_data = jogo.get("odds", [])
-            if odds_data:
-                odds = odds_data[0]["value"]
-        except:
-            pass
-
-        # Estatísticas de finalizações
-        stats_url = f"{BASE_URL}/fixtures/statistics?fixture={fixture_id}"
-        stats_resp = requests.get(stats_url, headers=HEADERS)
-        total_finalizacoes = 0
-        if stats_resp.status_code == 200:
-            stats_data = stats_resp.json().get("response", [])
-            for team_stats in stats_data:
-                for stat in team_stats.get("statistics", []):
+def calcular_padroes(stats_list, team_id):
+    finalizacoes = []
+    chutes_gol = []
+    cartoes = []
+    for stats in stats_list:
+        for team_stats in stats:
+            if team_stats["team"]["id"] == team_id:
+                for stat in team_stats["statistics"]:
                     if stat["type"] == "Total Shots" and isinstance(stat["value"], int):
-                        total_finalizacoes += stat["value"]
+                        finalizacoes.append(stat["value"])
+                    if stat["type"] == "Shots on Goal" and isinstance(stat["value"], int):
+                        chutes_gol.append(stat["value"])
+                    if stat["type"] == "Yellow Cards" and isinstance(stat["value"], int):
+                        cartoes.append(stat["value"])
+    return finalizacoes, chutes_gol, cartoes
 
-        # 1️⃣ Favorito < 1.3 levando gol no 1º tempo
-        if minuto <= 45 and odds is not None and odds < 1.3:
-            if (gols_home > gols_away and jogo["teams"]["away"]["winner"]) or                (gols_away > gols_home and jogo["teams"]["home"]["winner"]):
-                alerta_id = f"{fixture_id}-gol-fav"
-                if alerta_id not in alertas_enviados:
-                    msg = f"⚽ <b>ALERTA: FAVORITO SOFRENDO GOL</b>\nJogo: {home} {gols_home}x{gols_away} {away}\nMinuto: {minuto}'\nOdd inicial favorito: {odds}\nMotivo: Gol sofrido no 1º tempo"
-                    enviar_alerta(msg)
-                    alertas_enviados.add(alerta_id)
+def percentual_acerto(lista, linha):
+    if not lista:
+        return 0
+    return sum(1 for v in lista if v >= linha) / len(lista)
 
-        # 2️⃣ Mais de 4 finalizações até 15 min
-        if minuto <= 15 and total_finalizacoes > 4:
-            alerta_id = f"{fixture_id}-fin4"
-            if alerta_id not in alertas_enviados:
-                msg = f"🔥 <b>ALERTA: FINALIZAÇÕES > 4 (até 15')</b>\nJogo: {home} {gols_home}x{gols_away} {away}\nFinalizações totais: {total_finalizacoes}\nMinuto: {minuto}'"
-                enviar_alerta(msg)
-                alertas_enviados.add(alerta_id)
+def processar_jogos():
+    jogos = get_jogos_do_dia()
+    for jogo in jogos:
+        # Ignorar jogos que já começaram
+        if jogo["fixture"]["status"]["short"] != "NS":
+            continue
+        home_id = jogo["teams"]["home"]["id"]
+        away_id = jogo["teams"]["away"]["id"]
+        home_name = jogo["teams"]["home"]["name"]
+        away_name = jogo["teams"]["away"]["name"]
 
-        # 3️⃣ Mais de 7 finalizações até 30 min
-        if minuto <= 30 and total_finalizacoes > 7:
-            alerta_id = f"{fixture_id}-fin7"
-            if alerta_id not in alertas_enviados:
-                msg = f"🚀 <b>ALERTA: FINALIZAÇÕES > 7 (até 30')</b>\nJogo: {home} {gols_home}x{gols_away} {away}\nFinalizações totais: {total_finalizacoes}\nMinuto: {minuto}'"
-                enviar_alerta(msg)
-                alertas_enviados.add(alerta_id)
+        # Buscar últimos 10 jogos do mandante em casa
+        jogos_home = get_ultimos_jogos(home_id, "home")
+        stats_home = [get_stats_fixture(j["fixture"]["id"]) for j in jogos_home]
+        stats_home = [s for s in stats_home if s]
+
+        # Buscar últimos 10 jogos do visitante fora
+        jogos_away = get_ultimos_jogos(away_id, "away")
+        stats_away = [get_stats_fixture(j["fixture"]["id"]) for j in jogos_away]
+        stats_away = [s for s in stats_away if s]
+
+        # Calcular padrões
+        fin_home, chutes_home, cart_home = calcular_padroes(stats_home, home_id)
+        fin_away, chutes_away, cart_away = calcular_padroes(stats_away, away_id)
+
+        # Percentuais do visitante
+        pct_fin_away = percentual_acerto(fin_away, 8)  # +7,5
+        pct_chutes_away = percentual_acerto(chutes_away, 2)  # +1,5
+        pct_cart_away = percentual_acerto(cart_away, 1)  # +0,5
+
+        # Percentuais do mandante
+        pct_fin_home = percentual_acerto(fin_home, 8)  # +7,5
+        pct_cart_home = percentual_acerto(cart_home, 1)  # +0,5
+
+        # Cruzamento: se o mandante é agressivo e o visitante é reativo
+        if pct_fin_away >= 0.8 and pct_chutes_away >= 0.8 and pct_cart_home >= 0.9:
+            msg = f"🧠 <b>RD Stats – Entrada</b>\n\n"
+            msg += f"<b>Jogo:</b> {home_name} x {away_name}\n\n"
+            msg += f"<b>Mercados:</b>\n"
+            msg += f"· {away_name} +7,5 chutes ({pct_fin_away*100:.0f}% de acerto)\n"
+            msg += f"· {away_name} +1,5 chutes ao gol ({pct_chutes_away*100:.0f}% de acerto)\n"
+            msg += f"· {home_name} +0,5 cartões ({pct_cart_home*100:.0f}% de acerto)\n\n"
+            msg += f"<b>Contexto:</b> O {home_name} é agressivo em casa e o {away_name} é reativo fora. O visitante finaliza 8+ em {pct_fin_away*100:.0f}% dos jogos e chuta 2+ no gol em {pct_chutes_away*100:.0f}%.\n\n"
+            msg += f"Cada um sabe o que faz com a informação. 🚀"
+            enviar_alerta(msg)
 
 if __name__ == "__main__":
     fuso = pytz.timezone("America/Sao_Paulo")
     while True:
         agora = datetime.now(fuso)
-        if 10 <= agora.hour < 18:
-            processar_alertas()
-            time.sleep(120)  # 2 minutos
+        # Roda das 8h às 22h, a cada 30 minutos
+        if 8 <= agora.hour < 22:
+            processar_jogos()
+            time.sleep(1800)  # 30 minutos
         else:
-            time.sleep(300)  # 5 minutos fora do horário
+            time.sleep(3600)  # 1 hora fora do horário
