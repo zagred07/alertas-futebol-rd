@@ -12,7 +12,11 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 BASE_URL = "https://v3.football.api-sports.io"
 HEADERS = {"x-apisports-key": API_KEY}
 
-LIGAS = [71, 72]
+# Ligas: Brasileirão A (71), B (72), Premier League (39), La Liga (140),
+# Serie A (135), Bundesliga (78), Ligue 1 (61), Championship (40)
+LIGAS = [71, 72, 39, 140, 135, 78, 61, 40]
+
+# Bookmakers: 8 = Bet365, 2 = Pinnacle
 BOOKMAKERS = {"8": "Bet365", "2": "Pinnacle"}
 
 ARQUIVO_ENVIADOS = "jogos_enviados.json"
@@ -137,6 +141,7 @@ def processar_jogos():
         home_name = jogo["teams"]["home"]["name"]
         away_name = jogo["teams"]["away"]["name"]
 
+        # Buscar todos os jogos do mandante em casa e do visitante fora
         stats_home = []
         for j in get_jogos_do_dia():
             if j["teams"]["home"]["id"] == home_id:
@@ -163,7 +168,7 @@ def processar_jogos():
         mercados = []
         odd_final = 1.0
 
-        # Adiciona pernas com base no contexto
+        # Adicionar pernas com base no contexto
         if pct_fin_away >= 0.8:
             odd = get_odd_mercado(odds_bet365, "Total Shots", "Over 7.5")
             if odd:
@@ -190,14 +195,12 @@ def processar_jogos():
 
         # Complementar odd se estiver baixa
         if odd_final < 1.50 and mercados:
-            # Tentar adicionar Over 0,5 gols
             odd_over05 = get_odd_mercado(odds_bet365, "Goals Over/Under", "Over 0.5")
             if odd_over05 and odd_over05 >= 1.05:
                 mercados.append(f"· Mais de 0,5 gols na partida - Odd {odd_over05}")
                 odd_final *= odd_over05
 
         if odd_final < 1.50 and mercados:
-            # Tentar adicionar Ambas Marcam
             odd_btts = get_odd_mercado(odds_bet365, "Both Teams Score", "Yes")
             if odd_btts:
                 mercados.append(f"· Ambas marcam - Odd {odd_btts}")
