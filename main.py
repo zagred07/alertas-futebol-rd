@@ -25,6 +25,7 @@ ARQUIVO_CACHE    = "cache_stats.json"
 ARQUIVO_REQ      = "req_count.json"
 ARQUIVO_BINGO    = "bingo_do_dia.json"
 ARQUIVO_PLACAR   = "placar_do_dia.json"
+ARQUIVO_ODD_ERR  = "odd_errada_hoje.json"
 
 LIMITE_DIARIO = 7000
 ALERTA_LIMITE = 6000
@@ -45,8 +46,7 @@ INTERVALO_MIN = 30
 BINGO_MIN_JOGOS = 3
 PLACAR_MIN_JOGOS = 3
 PLACAR_MAX_JOGOS = 4
-
-PLACARES_COMUNS = ["1:0", "2:0", "2:1", "1:1"]
+ESPERA_ENTRE_MSGS = 10
 
 # ─────────────────────────────────────────────
 # CONTROLE DE REQUISIÇÕES
@@ -81,7 +81,7 @@ def atingiu_alerta():
 def api_get(endpoint, params=None):
     global REQ_COUNT
     if not pode_buscar():
-        print(f"[!] Limite diario atingido ({REQ_COUNT}/{LIMITE_DIARIO})")
+        print(f"[!] Limite diário atingido ({REQ_COUNT}/{LIMITE_DIARIO})")
         return None
     url = f"{BASE_URL}/{endpoint}"
     try:
@@ -164,33 +164,46 @@ def salvar_enviados(enviados):
     with open(ARQUIVO_ENVIADOS, "w") as f:
         json.dump(list(enviados), f)
 
-def bingo_ja_enviado_hoje():
-    if os.path.exists(ARQUIVO_BINGO):
+def _ja_enviado_hoje(arquivo):
+    if os.path.exists(arquivo):
         try:
-            with open(ARQUIVO_BINGO) as f:
+            with open(arquivo) as f:
                 d = json.load(f)
             return d.get("data") == _hoje_str()
         except:
             return False
     return False
+
+def _marcar_enviado_hoje(arquivo):
+    with open(arquivo, "w") as f:
+        json.dump({"data": _hoje_str()}, f)
+
+def bingo_ja_enviado_hoje():
+    return _ja_enviado_hoje(ARQUIVO_BINGO)
 
 def marcar_bingo_enviado():
-    with open(ARQUIVO_BINGO, "w") as f:
-        json.dump({"data": _hoje_str()}, f)
+    _marcar_enviado_hoje(ARQUIVO_BINGO)
 
 def placar_ja_enviado_hoje():
-    if os.path.exists(ARQUIVO_PLACAR):
-        try:
-            with open(ARQUIVO_PLACAR) as f:
-                d = json.load(f)
-            return d.get("data") == _hoje_str()
-        except:
-            return False
-    return False
+    return _ja_enviado_hoje(ARQUIVO_PLACAR)
 
 def marcar_placar_enviado():
-    with open(ARQUIVO_PLACAR, "w") as f:
-        json.dump({"data": _hoje_str()}, f)
+    _marcar_enviado_hoje(ARQUIVO_PLACAR)
+
+def carregar_odd_errada_hoje():
+    if os.path.exists(ARQUIVO_ODD_ERR):
+        try:
+            with open(ARQUIVO_ODD_ERR) as f:
+                d = json.load(f)
+            if d.get("data") == _hoje_str():
+                return set(d.get("ids", []))
+        except:
+            pass
+    return set()
+
+def salvar_odd_errada_hoje(ids):
+    with open(ARQUIVO_ODD_ERR, "w") as f:
+        json.dump({"data": _hoje_str(), "ids": list(ids)}, f)
 
 # ─────────────────────────────────────────────
 # BUSCAS
@@ -265,12 +278,15 @@ def analisar_mandante(jogos, team_id):
     if not jogos:
         return None
     fin, esc, cart = [], [], []
+    gols_feitos, gols_sofridos = [], []
     for j in jogos:
         stats = get_stats_fixture(j["fixture"]["id"])
         s = extrair_stats_jogo(stats, team_id)
         fin.append(s["finalizacoes"])
         esc.append(s["escanteios"])
         cart.append(s["cartoes"])
+        gols_feitos.append(get_gols(j, team_id))
+        gols_sofridos.append(get_gols_sofridos(j, team_id))
         time.sleep(0.1)
     if not fin:
         return None
@@ -279,6 +295,8 @@ def analisar_mandante(jogos, team_id):
         "media_fin": statistics.mean(fin),
         "media_esc": statistics.mean(esc),
         "media_cart": statistics.mean(cart) if cart else 0,
+        "media_gols_feitos": statistics.mean(gols_feitos),
+        "media_gols_sofridos": statistics.mean(gols_sofridos),
         "lista_fin": fin,
         "lista_esc": esc,
         "lista_cart": cart,
@@ -289,16 +307,20 @@ def analisar_visitante(jogos, team_id):
         return None
     fin, chutes, cart = [], [], []
     v, e, d = [], [], []
+    gols_feitos, gols_sofridos = [], []
     for j in jogos:
         stats = get_stats_fixture(j["fixture"]["id"])
         s = extrair_stats_jogo(stats, team_id)
         fin.append(s["finalizacoes"])
         chutes.append(s["chutes_gol"])
         cart.append(s["cartoes"])
-        gp, gc = get_gols(j, team_id), get_gols_sofridos(j, team_id)
-        if gp > gc:
+        gf = get_gols(j, team_id)
+        gs = get_gols_sofridos(j, team_id)
+        gols_feitos.append(gf)
+        gols_sofridos.append(gs)
+        if gf > gs:
             v.append(s["finalizacoes"])
-        elif gp < gc:
+        elif gf < gs:
             d.append(s["finalizacoes"])
         else:
             e.append(s["finalizacoes"])
@@ -313,6 +335,8 @@ def analisar_visitante(jogos, team_id):
         "media_fin": media_geral,
         "media_fin_perdendo": media_perdendo,
         "media_cart": statistics.mean(cart) if cart else 0,
+        "media_gols_feitos": statistics.mean(gols_feitos),
+        "media_gols_sofridos": statistics.mean(gols_sofridos),
         "reativo": reativo,
         "lista_fin": fin,
         "lista_chutes_gol": chutes,
@@ -324,23 +348,6 @@ def taxa(lista, linha):
         return 0, 0
     acertos = sum(1 for v in lista if v >= linha)
     return acertos / len(lista), acertos
-
-def analisar_placares(jogos, team_id):
-    placares = []
-    gols_feitos, gols_sofridos = [], []
-    for j in jogos:
-        gf = get_gols(j, team_id)
-        gs = get_gols_sofridos(j, team_id)
-        gols_feitos.append(gf)
-        gols_sofridos.append(gs)
-        placares.append((gf, gs))
-    if not gols_feitos:
-        return None
-    return {
-        "media_gols_feitos": statistics.mean(gols_feitos),
-        "media_gols_sofridos": statistics.mean(gols_sofridos),
-        "placares": placares,
-    }
 
 # ─────────────────────────────────────────────
 # ODDS
@@ -390,7 +397,7 @@ def detectar_odd_errada(odds, bet_id, valor, nome):
     return None
 
 # ─────────────────────────────────────────────
-# IDs
+# IDs DOS MERCADOS
 # ─────────────────────────────────────────────
 
 ID_GOALS      = 5
@@ -406,14 +413,14 @@ ID_TOTAL_SHOT = 211
 ID_TOTAL_SOG  = 87
 ID_AWAY_SHOTS = 276
 # ─────────────────────────────────────────────
-# ENTRADA PRINCIPAL
+# ENTRADA PRINCIPAL — VISITANTE REATIVO
 # ─────────────────────────────────────────────
 
 def montar_principal(mandante, visitante, odds, home_nome, away_nome):
     pernas = []
 
     if visitante:
-        for linha in [8.5, 7.5, 6.5]:
+        for linha in [9.5, 8.5, 7.5, 6.5]:
             t, ac = taxa(visitante["lista_fin"], linha)
             if t >= TAXA_MIN_ACERTO and visitante["n_jogos"] >= MIN_JOGOS:
                 odd = get_odd(odds, BET365_ID, ID_AWAY_SHOTS, f"Over {linha}")
@@ -471,7 +478,7 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
     return pernas[:PERNAS_MAX]
 
 # ─────────────────────────────────────────────
-# ENTRADA NORMAL (VALOR)
+# ENTRADA NORMAL — VALOR
 # ─────────────────────────────────────────────
 
 def buscar_valor_jogo(odds):
@@ -506,19 +513,67 @@ def buscar_valor_jogo(odds):
     return achados
 
 # ─────────────────────────────────────────────
-# RESULTADO CORRETO
+# PLACAR MÚLTIPLO — COM CONTEXTO
 # ─────────────────────────────────────────────
 
-def escolher_placar(mandante, visitante, placar_odds):
+def escolher_placar_com_contexto(mandante, visitante, placar_odds):
+    """
+    Analisa o contexto e escolhe o placar mais provável.
+    Retorna (placar, odd, motivo).
+    """
     if not mandante or not visitante or not placar_odds:
-        return None, None
-    candidatos = ["2:0", "1:0", "2:1", "1:1"]
-    for c in candidatos:
-        if c in placar_odds:
-            return c, placar_odds[c]
-    return None, None
+        return None, None, None
+
+    gols_casa = mandante.get("media_gols_feitos", 1.5)
+    gols_sofridos_casa = mandante.get("media_gols_sofridos", 1.0)
+    gols_fora = visitante.get("media_gols_feitos", 1.0)
+    gols_sofridos_fora = visitante.get("media_gols_sofridos", 1.5)
+
+    # Quantos gols o mandante deve fazer
+    gols_mand = round((gols_casa + gols_sofridos_fora) / 2)
+    gols_mand = max(0, min(4, gols_mand))
+
+    # Quantos gols o visitante deve fazer
+    gols_vis = round((gols_fora + gols_sofridos_casa) / 2)
+    gols_vis = max(0, min(3, gols_vis))
+
+    placar = f"{gols_mand}:{gols_vis}"
+
+    # Se não tiver esse placar, tenta os próximos
+    if placar not in placar_odds:
+        alternativas = [
+            f"{gols_mand}:{gols_vis+1}",
+            f"{gols_mand+1}:{gols_vis}",
+            f"{gols_mand}:{gols_vis-1}" if gols_vis > 0 else None,
+            f"{gols_mand-1}:{gols_vis}" if gols_mand > 0 else None,
+        ]
+        placar = None
+        for alt in alternativas:
+            if alt and alt in placar_odds:
+                placar = alt
+                break
+
+    if not placar:
+        return None, None, None
+
+    # Monta motivo
+    motivo = (
+        f"{mandante.get('nome', 'Mandante')} faz {gols_casa:.1f} gol/jogo em casa | "
+        f"{visitante.get('nome', 'Visitante')} faz {gols_fora:.1f} gol/jogo fora"
+    )
+
+    # Checa se visitante costuma marcar fora
+    if gols_fora >= 0.7 and int(placar.split(":")[1]) == 0:
+        # Visitante marca, mas escolhemos placar sem gol dele → tenta ajustar
+        placar_alt = f"{placar.split(':')[0]}:1"
+        if placar_alt in placar_odds:
+            placar = placar_alt
+            motivo += " | Visitante costuma marcar fora → ajustado com gol dele"
+
+    return placar, placar_odds[placar], motivo
 
 def montar_placar_multipla(jogos, dados_por_jogo):
+    """Agrupa jogos por horário e monta múltiplas de placar."""
     por_horario = defaultdict(list)
     for jogo in jogos:
         data_hora = jogo["fixture"]["date"][:16]
@@ -527,6 +582,7 @@ def montar_placar_multipla(jogos, dados_por_jogo):
     for horario, lista in por_horario.items():
         if len(lista) < PLACAR_MIN_JOGOS:
             continue
+
         candidatos = []
         for jogo in lista:
             fid = jogo["fixture"]["id"]
@@ -535,15 +591,20 @@ def montar_placar_multipla(jogos, dados_por_jogo):
             dados = dados_por_jogo[fid]
             if not dados.get("placar_odds"):
                 continue
-            placar, odd = escolher_placar(dados["mandante"], dados["visitante"], dados["placar_odds"])
-            if placar and odd:
+
+            placar, odd, motivo = escolher_placar_com_contexto(
+                dados["mandante"], dados["visitante"], dados["placar_odds"]
+            )
+            if placar and odd and 6.00 <= odd <= 15.00:
                 candidatos.append({
                     "home": jogo["teams"]["home"]["name"],
                     "away": jogo["teams"]["away"]["name"],
                     "placar": placar,
                     "odd": odd,
+                    "motivo": motivo,
                     "horario": horario
                 })
+
         if len(candidatos) >= PLACAR_MIN_JOGOS:
             candidatos.sort(key=lambda x: x["odd"])
             return candidatos[:PLACAR_MAX_JOGOS]
@@ -555,6 +616,15 @@ def montar_placar_multipla(jogos, dados_por_jogo):
 
 def fmt(v):
     return f"{v:.2f}"
+
+def msg_aviso(liga, home, away, horario, texto="Padrão identificado. Calculando valor..."):
+    return (
+        f"⚽ <b>RD STATS | ANÁLISE EM ANDAMENTO</b>\n\n"
+        f"🏆 {liga}\n"
+        f"🆚 {home} x {away}\n"
+        f"🕐 Hoje, {horario[11:16]}\n\n"
+        f"🔎 {texto}"
+    )
 
 def msg_principal(liga, home, away, mandante, visitante, pernas):
     linhas = [
@@ -694,6 +764,7 @@ def msg_placar(entradas, horario):
     odd_final = 1.0
     for e in entradas:
         linhas.append(f"• {e['home']} x {e['away']} — {e['placar']} @ {fmt(e['odd'])}")
+        linhas.append(f"   ↳ {e['motivo']}")
         odd_final *= e["odd"]
 
     linhas += [
@@ -714,7 +785,7 @@ def msg_placar(entradas, horario):
 # PROCESSAMENTO PRINCIPAL
 # ─────────────────────────────────────────────
 
-def processar_jogos():
+def processar_jogos(limite_jogos=None):
     global REQ_COUNT
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Iniciando análise...")
     print(f"Requisições usadas hoje: {REQ_COUNT}/{LIMITE_DIARIO}")
@@ -726,9 +797,14 @@ def processar_jogos():
     jogos = get_jogos_do_dia()
     print(f"Jogos do dia: {len(jogos)}")
 
+    if limite_jogos:
+        jogos = jogos[:limite_jogos]
+        print(f"⚙️ Limitado a {limite_jogos} jogos para teste")
+
     bingo_entradas = []
     bingo_ja = bingo_ja_enviado_hoje()
     placar_ja = placar_ja_enviado_hoje()
+    odd_errada_hoje = carregar_odd_errada_hoje()
     dados_por_jogo = {}
 
     for jogo in jogos:
@@ -759,6 +835,9 @@ def processar_jogos():
         if not mandante or not visitante:
             continue
 
+        mandante["nome"] = home_nome
+        visitante["nome"] = away_nome
+
         odds_data = get_odds_fixture(fixture_id)
         odds = extrair_odds(odds_data)
 
@@ -766,12 +845,12 @@ def processar_jogos():
             print("   Sem Bet365.")
             continue
 
+        # Guarda dados pro placar
         if not placar_ja:
             placar_odds = {}
             if ID_EXACT in odds[BET365_ID]:
                 for v, o in odds[BET365_ID][ID_EXACT]:
-                    if v in PLACARES_COMUNS:
-                        placar_odds[v] = o
+                    placar_odds[v] = o
             dados_por_jogo[fixture_id] = {
                 "mandante": mandante,
                 "visitante": visitante,
@@ -780,105 +859,104 @@ def processar_jogos():
 
         ja_enviado = str(fixture_id) in enviados
 
-        if not ja_enviado:
-            # 1. ODD ERRADA
-            alertas = []
-            for bet_id, valor, label in [
-                (ID_GOALS, "Over 2.5", "Over 2.5 gols"),
-                (ID_BTTS, "Yes", "Ambas marcam"),
-                (ID_CARDS, "Over 3.5", "Over 3.5 cartões"),
-                (ID_CORNERS, "Over 9.5", "Over 9.5 escanteios"),
-            ]:
-                a = detectar_odd_errada(odds, bet_id, valor, label)
-                if a:
-                    alertas.append(a)
-            if alertas:
-                enviar_mensagem(msg_odd_errada(liga_nome, home_nome, away_nome, alertas))
-                print(f"   💰 Odd errada")
-                time.sleep(10)
+        if ja_enviado:
+            continue
 
-            # 2. ENTRADA PRINCIPAL
-            if mandante["media_fin"] >= MANDANTE_MIN_FIN and mandante["media_esc"] >= MANDANTE_MIN_ESC and visitante["reativo"]:
-                pernas = montar_principal(mandante, visitante, odds, home_nome, away_nome)
-                if len(pernas) >= PERNAS_MIN:
-                    msg_aviso = (
-                        f"⚽ <b>RD STATS | ANÁLISE EM ANDAMENTO</b>\n\n"
-                        f"🏆 {liga_nome}\n"
-                        f"🆚 {home_nome} x {away_nome}\n"
-                        f"🕐 Hoje, {horario[11:16]}\n\n"
-                        f"🔎 Padrão identificado. Calculando valor..."
-                    )
-                    enviar_mensagem(msg_aviso)
-                    print(f"   📢 Aviso principal")
-                    time.sleep(10)
+        # ─── 1. ODD ERRADA (imediata) ───
+        alertas = []
+        for bet_id, valor, label in [
+            (ID_GOALS, "Over 2.5", "Over 2.5 gols"),
+            (ID_BTTS, "Yes", "Ambas marcam"),
+            (ID_CARDS, "Over 3.5", "Over 3.5 cartões"),
+            (ID_CORNERS, "Over 9.5", "Over 9.5 escanteios"),
+        ]:
+            chave = f"{fixture_id}-{bet_id}-{valor}"
+            if chave in odd_errada_hoje:
+                continue
+            a = detectar_odd_errada(odds, bet_id, valor, label)
+            if a:
+                alertas.append(a)
+                odd_errada_hoje.add(chave)
 
-                    enviados.add(str(fixture_id))
-                    salvar_enviados(enviados)
+        if alertas:
+            enviar_mensagem(msg_odd_errada(liga_nome, home_nome, away_nome, alertas))
+            salvar_odd_errada_hoje(odd_errada_hoje)
+            print(f"   💰 Odd errada enviada")
+            time.sleep(ESPERA_ENTRE_MSGS)
 
-                    enviar_mensagem(msg_principal(liga_nome, home_nome, away_nome, mandante, visitante, pernas))
-                    print(f"   ✅ Principal ({len(pernas)} pernas)")
-                    time.sleep(10)
+        # ─── 2. ENTRADA PRINCIPAL ───
+        achou_principal = False
+        if mandante["media_fin"] >= MANDANTE_MIN_FIN and mandante["media_esc"] >= MANDANTE_MIN_ESC and visitante["reativo"]:
+            pernas = montar_principal(mandante, visitante, odds, home_nome, away_nome)
+            if len(pernas) >= PERNAS_MIN:
+                achou_principal = True
 
-            # 3. ENTRADA NORMAL
-            valores = buscar_valor_jogo(odds)
-            if valores:
-                msg_aviso_valor = (
-                    f"⚽ <b>RD STATS | ANÁLISE EM ANDAMENTO</b>\n\n"
-                    f"🏆 {liga_nome}\n"
-                    f"🆚 {home_nome} x {away_nome}\n"
-                    f"🕐 Hoje, {horario[11:16]}\n\n"
-                    f"🔎 Procurando valor no mercado..."
-                )
-                enviar_mensagem(msg_aviso_valor)
-                print(f"   📢 Aviso valor")
-                time.sleep(10)
+                # Aviso
+                enviar_mensagem(msg_aviso(liga_nome, home_nome, away_nome, horario))
+                time.sleep(ESPERA_ENTRE_MSGS)
 
-                msg, odd_f = msg_valor(liga_nome, home_nome, away_nome, valores)
-                enviar_mensagem(msg)
-                print(f"   ✅ Normal (odd {odd_f:.2f})")
-                time.sleep(10)
+                # Entrada
+                enviar_mensagem(msg_principal(liga_nome, home_nome, away_nome, mandante, visitante, pernas))
+                print(f"   ✅ Principal ({len(pernas)} pernas)")
+                time.sleep(ESPERA_ENTRE_MSGS)
 
-                if not bingo_ja:
-                    bingo_entradas.append({
-                        "home": home_nome, "away": away_nome,
-                        "mercado": valores[0]["nome"], "odd": valores[0]["odd"]
-                    })
+        # ─── 3. ENTRADA NORMAL ───
+        valores = buscar_valor_jogo(odds)
+        if valores:
+            # Aviso
+            enviar_mensagem(msg_aviso(liga_nome, home_nome, away_nome, horario, "Procurando valor no mercado..."))
+            time.sleep(ESPERA_ENTRE_MSGS)
+
+            # Entrada
+            msg, odd_f = msg_valor(liga_nome, home_nome, away_nome, valores)
+            enviar_mensagem(msg)
+            print(f"   ✅ Normal (odd {odd_f:.2f})")
+            time.sleep(ESPERA_ENTRE_MSGS)
+
+            if not bingo_ja:
+                bingo_entradas.append({
+                    "home": home_nome, "away": away_nome,
+                    "mercado": valores[0]["nome"], "odd": valores[0]["odd"]
+                })
+
+        # Marca enviado se achou principal OU valor
+        if achou_principal or valores:
+            enviados.add(str(fixture_id))
+            salvar_enviados(enviados)
 
         time.sleep(1)
 
-    # 4. BINGO DO DIA
+    # ─── 4. BINGO DO DIA ───
     if not bingo_ja and len(bingo_entradas) >= BINGO_MIN_JOGOS:
         odd_bingo = 1.0
         for e in bingo_entradas:
             odd_bingo *= e["odd"]
         if odd_bingo >= ODD_BINGO_DIA:
-            msg_aviso_bingo = (
+            enviar_mensagem(
                 "🎰 <b>RD STATS | BINGO DO DIA</b>\n\n"
                 "Analisando os melhores jogos do dia...\n\n"
                 f"🎯 {len(bingo_entradas)} jogos com contexto forte"
             )
-            enviar_mensagem(msg_aviso_bingo)
-            time.sleep(10)
+            time.sleep(ESPERA_ENTRE_MSGS)
 
             enviar_mensagem(msg_bingo_aviso(odd_bingo))
-            time.sleep(10)
+            time.sleep(ESPERA_ENTRE_MSGS)
 
             msg, _ = msg_bingo(bingo_entradas)
             enviar_mensagem(msg)
             marcar_bingo_enviado()
             print(f"   🎰 BINGO DO DIA (odd {odd_bingo:.2f})")
 
-    # 5. RESULTADO CORRETO MÚLTIPLO
+    # ─── 5. PLACAR MÚLTIPLO ───
     if not placar_ja:
         multipla = montar_placar_multipla(jogos, dados_por_jogo)
         if multipla and len(multipla) >= PLACAR_MIN_JOGOS:
-            msg_aviso_placar = (
+            enviar_mensagem(
                 "🎯 <b>RD STATS | RESULTADO CORRETO MÚLTIPLO</b>\n\n"
                 "Analisando placares do dia...\n\n"
                 f"🎯 {len(multipla)} jogos no mesmo horário"
             )
-            enviar_mensagem(msg_aviso_placar)
-            time.sleep(10)
+            time.sleep(ESPERA_ENTRE_MSGS)
 
             horario = multipla[0]["horario"]
             msg, odd_p = msg_placar(multipla, horario)
