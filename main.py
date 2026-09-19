@@ -1,7 +1,7 @@
 import requests
 import time
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import json
 import statistics
@@ -46,7 +46,39 @@ INTERVALO_MIN = 30
 BINGO_MIN_JOGOS = 3
 PLACAR_MIN_JOGOS = 3
 PLACAR_MAX_JOGOS = 4
-ESPERA_ENTRE_MSGS = 10
+ESPERA_ENTRE_MSGS = 15
+
+# ─────────────────────────────────────────────
+# ANTI-DUPLICAÇÃO VIA TELEGRAM
+# ─────────────────────────────────────────────
+
+def ler_ultimas_mensagens(limit=20):
+    """Lê as últimas mensagens do canal pra evitar duplicação."""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+    try:
+        r = requests.get(url, params={"limit": limit, "allowed_updates": '["channel_post"]'}, timeout=15)
+        if r.status_code != 200:
+            return []
+        updates = r.json().get("result", [])
+        textos = []
+        for u in updates:
+            post = u.get("channel_post", {})
+            txt = post.get("text", "")
+            if txt:
+                textos.append(txt)
+        return textos
+    except Exception as e:
+        print(f"Erro lendo Telegram: {e}")
+        return []
+
+def ja_enviado_no_telegram(home_nome, away_nome):
+    """Verifica se já mandou entrada desse jogo hoje (via Telegram)."""
+    msgs = ler_ultimas_mensagens(50)
+    chave = f"{home_nome} x {away_nome}"
+    for m in msgs:
+        if chave in m and "ESTRATÉGIA VISITANTE REATIVO" in m:
+            return True
+    return False
 
 # ─────────────────────────────────────────────
 # CONTROLE DE REQUISIÇÕES
@@ -206,17 +238,39 @@ def salvar_odd_errada_hoje(ids):
         json.dump({"data": _hoje_str(), "ids": list(ids)}, f)
 
 # ─────────────────────────────────────────────
+# DATA CORRETA
+# ─────────────────────────────────────────────
+
+def formatar_data_jogo(horario_iso):
+    """Retorna 'Hoje, 19:00' / 'Amanhã, 19:00' / '21/09, 19:00'."""
+    try:
+        dt_jogo = datetime.fromisoformat(horario_iso.replace("Z", "+00:00"))
+        dt_jogo = dt_jogo.astimezone(pytz.timezone("America/Sao_Paulo"))
+        hoje = datetime.now(pytz.timezone("America/Sao_Paulo")).date()
+        amanha = hoje + timedelta(days=1)
+        if dt_jogo.date() == hoje:
+            return f"Hoje, {dt_jogo.strftime('%H:%M')}"
+        elif dt_jogo.date() == amanha:
+            return f"Amanhã, {dt_jogo.strftime('%H:%M')}"
+        else:
+            return f"{dt_jogo.strftime('%d/%m')}, {dt_jogo.strftime('%H:%M')}"
+    except:
+        return horario_iso[11:16]
+
+# ─────────────────────────────────────────────
 # BUSCAS
 # ─────────────────────────────────────────────
 
 def get_jogos_do_dia():
     hoje = datetime.now(pytz.timezone("America/Sao_Paulo")).strftime("%Y-%m-%d")
+    amanha = (datetime.now(pytz.timezone("America/Sao_Paulo")) + timedelta(days=1)).strftime("%Y-%m-%d")
     jogos = []
     for liga in LIGAS:
-        resp = api_get("fixtures", {"date": hoje, "league": liga, "season": SEASON})
-        if resp:
-            jogos.extend(resp)
-        time.sleep(0.2)
+        for data in [hoje, amanha]:
+            resp = api_get("fixtures", {"date": data, "league": liga, "season": SEASON})
+            if resp:
+                jogos.extend(resp)
+            time.sleep(0.2)
     return jogos
 
 def get_jogos_time(team_id, liga_id, casa=True):
@@ -349,6 +403,22 @@ def taxa(lista, linha):
     acertos = sum(1 for v in lista if v >= linha)
     return acertos / len(lista), acertos
 
+def escolher_linha_mais_assertiva(lista, linhas_possiveis, min_linha):
+    """Escolhe a linha MAIS ASSERTIVA (maior %). Se empatar, pega a mais alta."""
+    melhor = None
+    melhor_taxa = 0
+    melhor_acertos = 0
+    for linha in linhas_possiveis:
+        if linha < min_linha:
+            continue
+        t, ac = taxa(lista, linha)
+        if t >= TAXA_MIN_ACERTO:
+            if t > melhor_taxa or (t == melhor_taxa and (melhor is None or linha > melhor)):
+                melhor = linha
+                melhor_taxa = t
+                melhor_acertos = ac
+    return melhor, melhor_taxa, melhor_acertos
+
 # ─────────────────────────────────────────────
 # ODDS
 # ─────────────────────────────────────────────
@@ -420,60 +490,75 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
     pernas = []
 
     if visitante:
-        for linha in [9.5, 8.5, 7.5, 6.5]:
-            t, ac = taxa(visitante["lista_fin"], linha)
-            if t >= TAXA_MIN_ACERTO and visitante["n_jogos"] >= MIN_JOGOS:
-                odd = get_odd(odds, BET365_ID, ID_AWAY_SHOTS, f"Over {linha}")
-                pernas.append({
-                    "nome": f"{away_nome} +{linha} finalizações",
-                    "taxa": t, "acertos": ac, "total": visitante["n_jogos"],
-                    "odd": odd, "bet_id": ID_AWAY_SHOTS, "valor": f"Over {linha}"
-                })
-                break
+        # FINALIZAÇÕES DO VISITANTE — mínimo +7,5, mais assertiva
+        linha, t, ac = escolher_linha_mais_assertiva(
+            visitante["lista_fin"],
+            [7.5, 8.5, 9.5, 10.5, 11.5, 12.5],
+            min_linha=7.5
+        )
+        if linha is not None:
+            odd = get_odd(odds, BET365_ID, ID_AWAY_SHOTS, f"Over {linha}")
+            pernas.append({
+                "nome": f"{away_nome} +{linha} finalizações",
+                "taxa": t, "acertos": ac, "total": visitante["n_jogos"],
+                "odd": odd, "bet_id": ID_AWAY_SHOTS, "valor": f"Over {linha}"
+            })
 
-        for linha in [2.5, 1.5]:
-            t, ac = taxa(visitante["lista_chutes_gol"], linha)
-            if t >= TAXA_MIN_ACERTO and visitante["n_jogos"] >= MIN_JOGOS:
-                pernas.append({
-                    "nome": f"{away_nome} +{linha} chutes ao gol",
-                    "taxa": t, "acertos": ac, "total": visitante["n_jogos"],
-                    "odd": None, "bet_id": None, "valor": None
-                })
-                break
+        # CHUTES AO GOL DO VISITANTE — mínimo +1,5
+        linha, t, ac = escolher_linha_mais_assertiva(
+            visitante["lista_chutes_gol"],
+            [1.5, 2.5, 3.5, 4.5],
+            min_linha=1.5
+        )
+        if linha is not None:
+            pernas.append({
+                "nome": f"{away_nome} +{linha} chutes ao gol",
+                "taxa": t, "acertos": ac, "total": visitante["n_jogos"],
+                "odd": None, "bet_id": None, "valor": None
+            })
 
-        for linha in [2.5, 1.5, 0.5]:
-            t, ac = taxa(visitante["lista_cartoes"], linha)
-            if t >= TAXA_MIN_ACERTO and visitante["n_jogos"] >= MIN_JOGOS:
-                odd = get_odd(odds, BET365_ID, ID_AWAY_CARDS, f"Over {linha}")
-                pernas.append({
-                    "nome": f"{away_nome} +{linha} cartões",
-                    "taxa": t, "acertos": ac, "total": visitante["n_jogos"],
-                    "odd": odd, "bet_id": ID_AWAY_CARDS, "valor": f"Over {linha}"
-                })
-                break
+        # CARTÕES DO VISITANTE — mínimo +0,5
+        linha, t, ac = escolher_linha_mais_assertiva(
+            visitante["lista_cartoes"],
+            [0.5, 1.5, 2.5],
+            min_linha=0.5
+        )
+        if linha is not None:
+            odd = get_odd(odds, BET365_ID, ID_AWAY_CARDS, f"Over {linha}")
+            pernas.append({
+                "nome": f"{away_nome} +{linha} cartões",
+                "taxa": t, "acertos": ac, "total": visitante["n_jogos"],
+                "odd": odd, "bet_id": ID_AWAY_CARDS, "valor": f"Over {linha}"
+            })
 
     if mandante:
-        for linha in [1.5, 0.5]:
-            t, ac = taxa(mandante["lista_cart"], linha)
-            if t >= TAXA_MIN_ACERTO and mandante["n_jogos"] >= MIN_JOGOS:
-                odd = get_odd(odds, BET365_ID, ID_HOME_CARDS, f"Over {linha}")
-                pernas.append({
-                    "nome": f"{home_nome} +{linha} cartões",
-                    "taxa": t, "acertos": ac, "total": mandante["n_jogos"],
-                    "odd": odd, "bet_id": ID_HOME_CARDS, "valor": f"Over {linha}"
-                })
-                break
+        # CARTÕES DO MANDANTE — mínimo +0,5
+        linha, t, ac = escolher_linha_mais_assertiva(
+            mandante["lista_cart"],
+            [0.5, 1.5, 2.5],
+            min_linha=0.5
+        )
+        if linha is not None:
+            odd = get_odd(odds, BET365_ID, ID_HOME_CARDS, f"Over {linha}")
+            pernas.append({
+                "nome": f"{home_nome} +{linha} cartões",
+                "taxa": t, "acertos": ac, "total": mandante["n_jogos"],
+                "odd": odd, "bet_id": ID_HOME_CARDS, "valor": f"Over {linha}"
+            })
 
-        for linha in [4.5, 3.5]:
-            t, ac = taxa(mandante["lista_esc"], linha)
-            if t >= TAXA_MIN_ACERTO and mandante["n_jogos"] >= MIN_JOGOS:
-                odd = get_odd(odds, BET365_ID, ID_HOME_CORN, f"Over {linha}")
-                pernas.append({
-                    "nome": f"{home_nome} +{linha} escanteios",
-                    "taxa": t, "acertos": ac, "total": mandante["n_jogos"],
-                    "odd": odd, "bet_id": ID_HOME_CORN, "valor": f"Over {linha}"
-                })
-                break
+        # ESCANTEIOS DO MANDANTE — mínimo +3,5
+        linha, t, ac = escolher_linha_mais_assertiva(
+            mandante["lista_esc"],
+            [3.5, 4.5, 5.5, 6.5],
+            min_linha=3.5
+        )
+        if linha is not None:
+            odd = get_odd(odds, BET365_ID, ID_HOME_CORN, f"Over {linha}")
+            pernas.append({
+                "nome": f"{home_nome} +{linha} escanteios",
+                "taxa": t, "acertos": ac, "total": mandante["n_jogos"],
+                "odd": odd, "bet_id": ID_HOME_CORN, "valor": f"Over {linha}"
+            })
 
     return pernas[:PERNAS_MAX]
 
@@ -517,10 +602,6 @@ def buscar_valor_jogo(odds):
 # ─────────────────────────────────────────────
 
 def escolher_placar_com_contexto(mandante, visitante, placar_odds):
-    """
-    Analisa o contexto e escolhe o placar mais provável.
-    Retorna (placar, odd, motivo).
-    """
     if not mandante or not visitante or not placar_odds:
         return None, None, None
 
@@ -529,23 +610,21 @@ def escolher_placar_com_contexto(mandante, visitante, placar_odds):
     gols_fora = visitante.get("media_gols_feitos", 1.0)
     gols_sofridos_fora = visitante.get("media_gols_sofridos", 1.5)
 
-    # Quantos gols o mandante deve fazer
     gols_mand = round((gols_casa + gols_sofridos_fora) / 2)
     gols_mand = max(0, min(4, gols_mand))
 
-    # Quantos gols o visitante deve fazer
     gols_vis = round((gols_fora + gols_sofridos_casa) / 2)
     gols_vis = max(0, min(3, gols_vis))
 
     placar = f"{gols_mand}:{gols_vis}"
 
-    # Se não tiver esse placar, tenta os próximos
     if placar not in placar_odds:
         alternativas = [
             f"{gols_mand}:{gols_vis+1}",
             f"{gols_mand+1}:{gols_vis}",
             f"{gols_mand}:{gols_vis-1}" if gols_vis > 0 else None,
             f"{gols_mand-1}:{gols_vis}" if gols_mand > 0 else None,
+            f"{gols_mand+1}:{gols_vis+1}",
         ]
         placar = None
         for alt in alternativas:
@@ -556,24 +635,21 @@ def escolher_placar_com_contexto(mandante, visitante, placar_odds):
     if not placar:
         return None, None, None
 
-    # Monta motivo
     motivo = (
-        f"{mandante.get('nome', 'Mandante')} faz {gols_casa:.1f} gol/jogo em casa | "
-        f"{visitante.get('nome', 'Visitante')} faz {gols_fora:.1f} gol/jogo fora"
+        f"{mandante.get('nome','Mandante')} faz {gols_casa:.1f} gol/jogo em casa | "
+        f"{visitante.get('nome','Visitante')} faz {gols_fora:.1f} gol/jogo fora"
     )
 
-    # Checa se visitante costuma marcar fora
+    # Se visitante costuma marcar fora mas placar não tem gol dele
     if gols_fora >= 0.7 and int(placar.split(":")[1]) == 0:
-        # Visitante marca, mas escolhemos placar sem gol dele → tenta ajustar
         placar_alt = f"{placar.split(':')[0]}:1"
         if placar_alt in placar_odds:
             placar = placar_alt
-            motivo += " | Visitante costuma marcar fora → ajustado com gol dele"
+            motivo += " | Visitante marca fora → ajustado com gol dele"
 
     return placar, placar_odds[placar], motivo
 
 def montar_placar_multipla(jogos, dados_por_jogo):
-    """Agrupa jogos por horário e monta múltiplas de placar."""
     por_horario = defaultdict(list)
     for jogo in jogos:
         data_hora = jogo["fixture"]["date"][:16]
@@ -611,7 +687,7 @@ def montar_placar_multipla(jogos, dados_por_jogo):
     return None
 
 # ─────────────────────────────────────────────
-# FORMATADORES DE MENSAGEM
+# FORMATADORES
 # ─────────────────────────────────────────────
 
 def fmt(v):
@@ -622,7 +698,7 @@ def msg_aviso(liga, home, away, horario, texto="Padrão identificado. Calculando
         f"⚽ <b>RD STATS | ANÁLISE EM ANDAMENTO</b>\n\n"
         f"🏆 {liga}\n"
         f"🆚 {home} x {away}\n"
-        f"🕐 Hoje, {horario[11:16]}\n\n"
+        f"🕐 {horario}\n\n"
         f"🔎 {texto}"
     )
 
@@ -782,7 +858,7 @@ def msg_placar(entradas, horario):
     return "\n".join(linhas), odd_final
 
 # ─────────────────────────────────────────────
-# PROCESSAMENTO PRINCIPAL
+# PROCESSAMENTO
 # ─────────────────────────────────────────────
 
 def processar_jogos(limite_jogos=None):
@@ -807,6 +883,9 @@ def processar_jogos(limite_jogos=None):
     odd_errada_hoje = carregar_odd_errada_hoje()
     dados_por_jogo = {}
 
+    # Lê as últimas mensagens do canal pra anti-duplicação
+    msgs_canal = ler_ultimas_mensagens(50)
+
     for jogo in jogos:
         if jogo["fixture"]["status"]["short"] != "NS":
             continue
@@ -818,9 +897,17 @@ def processar_jogos(limite_jogos=None):
         away_id   = jogo["teams"]["away"]["id"]
         home_nome = jogo["teams"]["home"]["name"]
         away_nome = jogo["teams"]["away"]["name"]
-        horario = jogo["fixture"]["date"]
+        horario_iso = jogo["fixture"]["date"]
+        horario_fmt = formatar_data_jogo(horario_iso)
 
-        print(f"\n→ {home_nome} x {away_nome}")
+        print(f"\n→ {home_nome} x {away_nome} ({horario_fmt})")
+
+        # Anti-duplicação via Telegram
+        chave_tg = f"{home_nome} x {away_nome}"
+        ja_no_canal = any(chave_tg in m and "VISITANTE REATIVO" in m for m in msgs_canal)
+        if ja_no_canal:
+            print(f"   ⏭️ Já enviado no canal. Pulando.")
+            continue
 
         jogos_casa = get_jogos_time(home_id, liga_id, casa=True)
         jogos_fora = get_jogos_time(away_id, liga_id, casa=False)
@@ -845,7 +932,6 @@ def processar_jogos(limite_jogos=None):
             print("   Sem Bet365.")
             continue
 
-        # Guarda dados pro placar
         if not placar_ja:
             placar_odds = {}
             if ID_EXACT in odds[BET365_ID]:
@@ -858,11 +944,11 @@ def processar_jogos(limite_jogos=None):
             }
 
         ja_enviado = str(fixture_id) in enviados
-
         if ja_enviado:
+            print(f"   ⏭️ Já enviado no arquivo. Pulando.")
             continue
 
-        # ─── 1. ODD ERRADA (imediata) ───
+        # 1. ODD ERRADA (imediata)
         alertas = []
         for bet_id, valor, label in [
             (ID_GOALS, "Over 2.5", "Over 2.5 gols"),
@@ -884,30 +970,23 @@ def processar_jogos(limite_jogos=None):
             print(f"   💰 Odd errada enviada")
             time.sleep(ESPERA_ENTRE_MSGS)
 
-        # ─── 2. ENTRADA PRINCIPAL ───
+        # 2. ENTRADA PRINCIPAL
         achou_principal = False
         if mandante["media_fin"] >= MANDANTE_MIN_FIN and mandante["media_esc"] >= MANDANTE_MIN_ESC and visitante["reativo"]:
             pernas = montar_principal(mandante, visitante, odds, home_nome, away_nome)
             if len(pernas) >= PERNAS_MIN:
                 achou_principal = True
-
-                # Aviso
-                enviar_mensagem(msg_aviso(liga_nome, home_nome, away_nome, horario))
+                enviar_mensagem(msg_aviso(liga_nome, home_nome, away_nome, horario_fmt))
                 time.sleep(ESPERA_ENTRE_MSGS)
-
-                # Entrada
                 enviar_mensagem(msg_principal(liga_nome, home_nome, away_nome, mandante, visitante, pernas))
                 print(f"   ✅ Principal ({len(pernas)} pernas)")
                 time.sleep(ESPERA_ENTRE_MSGS)
 
-        # ─── 3. ENTRADA NORMAL ───
+        # 3. ENTRADA NORMAL
         valores = buscar_valor_jogo(odds)
         if valores:
-            # Aviso
-            enviar_mensagem(msg_aviso(liga_nome, home_nome, away_nome, horario, "Procurando valor no mercado..."))
+            enviar_mensagem(msg_aviso(liga_nome, home_nome, away_nome, horario_fmt, "Procurando valor no mercado..."))
             time.sleep(ESPERA_ENTRE_MSGS)
-
-            # Entrada
             msg, odd_f = msg_valor(liga_nome, home_nome, away_nome, valores)
             enviar_mensagem(msg)
             print(f"   ✅ Normal (odd {odd_f:.2f})")
@@ -919,14 +998,13 @@ def processar_jogos(limite_jogos=None):
                     "mercado": valores[0]["nome"], "odd": valores[0]["odd"]
                 })
 
-        # Marca enviado se achou principal OU valor
         if achou_principal or valores:
             enviados.add(str(fixture_id))
             salvar_enviados(enviados)
 
         time.sleep(1)
 
-    # ─── 4. BINGO DO DIA ───
+    # 4. BINGO DO DIA
     if not bingo_ja and len(bingo_entradas) >= BINGO_MIN_JOGOS:
         odd_bingo = 1.0
         for e in bingo_entradas:
@@ -938,16 +1016,14 @@ def processar_jogos(limite_jogos=None):
                 f"🎯 {len(bingo_entradas)} jogos com contexto forte"
             )
             time.sleep(ESPERA_ENTRE_MSGS)
-
             enviar_mensagem(msg_bingo_aviso(odd_bingo))
             time.sleep(ESPERA_ENTRE_MSGS)
-
             msg, _ = msg_bingo(bingo_entradas)
             enviar_mensagem(msg)
             marcar_bingo_enviado()
             print(f"   🎰 BINGO DO DIA (odd {odd_bingo:.2f})")
 
-    # ─── 5. PLACAR MÚLTIPLO ───
+    # 5. PLACAR MÚLTIPLO
     if not placar_ja:
         multipla = montar_placar_multipla(jogos, dados_por_jogo)
         if multipla and len(multipla) >= PLACAR_MIN_JOGOS:
@@ -957,7 +1033,6 @@ def processar_jogos(limite_jogos=None):
                 f"🎯 {len(multipla)} jogos no mesmo horário"
             )
             time.sleep(ESPERA_ENTRE_MSGS)
-
             horario = multipla[0]["horario"]
             msg, odd_p = msg_placar(multipla, horario)
             enviar_mensagem(msg)
@@ -968,7 +1043,7 @@ def processar_jogos(limite_jogos=None):
     print(f"\n✅ Ciclo finalizado. Req: {REQ_COUNT}/{LIMITE_DIARIO}")
 
 # ─────────────────────────────────────────────
-# LOOP PRINCIPAL
+# LOOP
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":
