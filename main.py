@@ -561,7 +561,7 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
     if not visitante:
         return []
 
-    # ─── 1. FINALIZAÇÕES DO VISITANTE (OBRIGATÓRIA) ───
+    # FINALIZAÇÕES DO VISITANTE (OBRIGATÓRIA)
     linha_fin, t_fin, ac_fin = escolher_linha_mais_assertiva(
         visitante["lista_fin"],
         [7.5, 8.5, 9.5, 10.5, 11.5, 12.5],
@@ -577,7 +577,7 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
         "odd": odd_fin, "bet_id": ID_AWAY_SHOTS, "valor": f"Over {linha_fin}"
     })
 
-    # ─── 2. CHUTES AO GOL DO VISITANTE (contexto) ───
+    # CHUTES AO GOL DO VISITANTE (contexto)
     linha, t, ac = escolher_linha_mais_assertiva(
         visitante["lista_chutes_gol"],
         [1.5, 2.5, 3.5, 4.5],
@@ -590,7 +590,7 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
             "odd": None, "bet_id": None, "valor": None
         })
 
-    # ─── 3. CARTÕES DO VISITANTE ───
+    # CARTÕES DO VISITANTE
     linha, t, ac = escolher_linha_mais_assertiva(
         visitante["lista_cartoes"],
         [0.5, 1.5, 2.5],
@@ -604,8 +604,8 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
             "odd": odd, "bet_id": ID_AWAY_CARDS, "valor": f"Over {linha}"
         })
 
-    # ─── 4. CARTÕES DO MANDANTE ───
     if mandante:
+        # CARTÕES DO MANDANTE
         linha, t, ac = escolher_linha_mais_assertiva(
             mandante["lista_cart"],
             [0.5, 1.5, 2.5],
@@ -619,7 +619,7 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
                 "odd": odd, "bet_id": ID_HOME_CARDS, "valor": f"Over {linha}"
             })
 
-        # ─── 5. ESCANTEIOS DO MANDANTE ───
+        # ESCANTEIOS DO MANDANTE
         linha, t, ac = escolher_linha_mais_assertiva(
             mandante["lista_esc"],
             [3.5, 4.5, 5.5, 6.5],
@@ -633,31 +633,36 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
                 "odd": odd, "bet_id": ID_HOME_CORN, "valor": f"Over {linha}"
             })
 
-    # ─── 6. MANDANTE OVER 0.5 GOLS (ID 16) ───
+    # MANDANTE OVER 0.5 GOLS
     if mandante and mandante.get("pct_marcou", 0) >= TAXA_MIN_ACERTO:
         odd = get_odd(odds, BET365_ID, ID_HOME_TOTAL, "Over 0.5")
         if odd:
             pernas.append({
                 "nome": f"{home_nome} marca (+0.5 gols)",
-                "taxa": mandante["pct_marcou"], "acertos": int(mandante["pct_marcou"] * mandante["n_jogos"]), "total": mandante["n_jogos"],
+                "taxa": mandante["pct_marcou"],
+                "acertos": int(mandante["pct_marcou"] * mandante["n_jogos"]),
+                "total": mandante["n_jogos"],
                 "odd": odd, "bet_id": ID_HOME_TOTAL, "valor": "Over 0.5"
             })
 
-    # ─── 7. VISITANTE OVER 0.5 GOLS (ID 17) — só se taxa ≥ 85% ───
+    # VISITANTE OVER 0.5 GOLS (só se taxa ≥ 85%)
     if visitante and visitante.get("pct_marcou", 0) >= TAXA_MIN_VIS_GOL:
         odd = get_odd(odds, BET365_ID, ID_AWAY_TOTAL, "Over 0.5")
         if odd:
             pernas.append({
                 "nome": f"{away_nome} marca (+0.5 gols)",
-                "taxa": visitante["pct_marcou"], "acertos": int(visitante["pct_marcou"] * visitante["n_jogos"]), "total": visitante["n_jogos"],
+                "taxa": visitante["pct_marcou"],
+                "acertos": int(visitante["pct_marcou"] * visitante["n_jogos"]),
+                "total": visitante["n_jogos"],
                 "odd": odd, "bet_id": ID_AWAY_TOTAL, "valor": "Over 0.5"
             })
 
-    # ─── 8. AMBOS RECEBEM CARTÃO (252 ou 300) ───
+    # AMBOS RECEBEM CARTÃO (252 → 300 → 80)
     odd_252 = get_odd(odds, BET365_ID, ID_BOTH_CARDS, "Yes")
     odd_300 = get_odd(odds, BET365_ID, ID_BOTH_2CARDS, "Yes")
+    odd_80  = get_odd(odds, BET365_ID, ID_CARDS, "Over 3.5")
 
-    if odd_252 and (not odd_300 or odd_252 >= 1.30):
+    if odd_252:
         pernas.append({
             "nome": "Ambos recebem cartão",
             "taxa": 0.75, "acertos": 0, "total": 0,
@@ -671,8 +676,15 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
             "odd": odd_300, "bet_id": ID_BOTH_2CARDS, "valor": "Yes",
             "tipo": "ambos"
         })
+    elif odd_80 and odd_80 >= ODD_MIN_PERNA:
+        pernas.append({
+            "nome": "Mais de 3,5 cartões",
+            "taxa": 0.70, "acertos": 0, "total": 0,
+            "odd": odd_80, "bet_id": ID_CARDS, "valor": "Over 3.5",
+            "tipo": "ambos"
+        })
 
-    # ─── FILTRO DE ODD MÍNIMA POR PERNA (1.20) ───
+    # FILTRO DE ODD MÍNIMA POR PERNA
     pernas_filtradas = []
     for p in pernas:
         if p.get("odd"):
@@ -681,8 +693,7 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
         else:
             pernas_filtradas.append(p)
 
-    # ─── ORDENAR POR TAXA DE ACERTO (maior primeiro), mantendo finalização ───
-    # Finalização já está na frente (adicionada primeiro) e é obrigatória
+    # ORDENAR: finalização primeiro, resto por taxa
     pernas_ordenadas = []
     if pernas_filtradas and "finalizações" in pernas_filtradas[0]["nome"]:
         pernas_ordenadas.append(pernas_filtradas[0])
@@ -693,9 +704,12 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
         pernas_filtradas.sort(key=lambda x: x.get("taxa", 0), reverse=True)
         pernas_ordenadas = pernas_filtradas
 
-    # ─── PRECISA TER PELO MENOS 2 PERNAS COM ODD ───
     com_odd = [p for p in pernas_ordenadas if p.get("odd")]
     if len(com_odd) < PERNAS_MIN:
+        # Sem 2 pernas com odd — mas ainda pode mandar sem odd
+        # Retorna mesmo assim se tiver pelo menos 2 pernas no total
+        if len(pernas_ordenadas) >= PERNAS_MIN:
+            return pernas_ordenadas[:PERNAS_MAX]
         return []
 
     return pernas_ordenadas[:PERNAS_MAX]
@@ -757,6 +771,12 @@ def eh_fraco(visitante, posicao, total_times):
 
 def escolher_placar_com_contexto(mandante, visitante, placar_odds, pos_mand=None, pos_vis=None, total_times=20):
     if not mandante or not visitante or not placar_odds:
+        return None, None, None
+
+    # DESCARTA se não tem stats
+    if mandante.get("max_gols", 0) == 0 and mandante.get("media_gols_feitos", 0) == 0:
+        return None, None, None
+    if visitante.get("max_gols", 0) == 0 and visitante.get("media_gols_feitos", 0) == 0:
         return None, None, None
 
     gols_casa = mandante.get("media_gols_feitos", 1.5)
@@ -870,7 +890,7 @@ def msg_aviso(liga, home, away, horario, texto="Padrão identificado. Calculando
         f"🔎 {texto}"
     )
 
-def msg_principal(liga, home, away, mandante, visitante, pernas):
+def msg_principal(liga, home, away, mandante, visitante, pernas, odd_final=None):
     linhas = [
         "⚽ <b>RD STATS | ESTRATÉGIA VISITANTE REATIVO</b>",
         "",
@@ -897,9 +917,21 @@ def msg_principal(liga, home, away, mandante, visitante, pernas):
             linha += f" — @ {fmt(p['odd'])}"
         linhas.append(linha)
 
-    taxas = [p["taxa"] for p in pernas]
-    pct = int((sum(taxas) / len(taxas)) * 100)
+    taxas = [p["taxa"] for p in pernas if p.get("taxa")]
+    pct = int((sum(taxas) / len(taxas)) * 100) if taxas else 0
     nivel = "ALTA" if pct >= 90 else "MÉDIA" if pct >= 80 else "BAIXA"
+
+    linhas += [
+        "",
+        "━━━━━━━━━━━━━━━━━━━",
+        ""
+    ]
+
+    if odd_final:
+        linhas.append(f"💰 <b>ODD FINAL:</b> {fmt(odd_final)}")
+    else:
+        linhas.append("⚠️ <b>Odd não disponível ainda na Bet365</b>")
+        linhas.append("Confira as odds antes de apostar")
 
     linhas += [
         "",
@@ -1087,13 +1119,14 @@ def processar_jogos(limite_jogos=None):
         jogos_fora = get_jogos_time(away_id, liga_id, casa=False)
 
         if not jogos_casa or not jogos_fora:
-            print("   Sem histórico.")
+            print(f"   ❌ Sem histórico: casa={len(jogos_casa)} | fora={len(jogos_fora)}")
             continue
 
         mandante = analisar_mandante(jogos_casa, home_id)
         visitante = analisar_visitante(jogos_fora, away_id)
 
         if not mandante or not visitante:
+            print(f"   ❌ Erro ao analisar histórico")
             continue
 
         mandante["nome"] = home_nome
@@ -1103,8 +1136,11 @@ def processar_jogos(limite_jogos=None):
         odds = extrair_odds(odds_data)
 
         if BET365_ID not in odds:
-            print("   Sem Bet365.")
+            print(f"   ❌ Sem odds da Bet365")
             continue
+
+        print(f"   📊 Mandante: {mandante['n_jogos']} jogos | {mandante['media_fin']:.1f} fin | {mandante['media_esc']:.1f} esc")
+        print(f"   📊 Visitante: {visitante['n_jogos']} jogos | perdendo={visitante['media_fin_perdendo']:.1f} x geral={visitante['media_fin']:.1f}")
 
         if not placar_ja:
             placar_odds = {}
@@ -1127,10 +1163,10 @@ def processar_jogos(limite_jogos=None):
 
         ja_enviado = str(fixture_id) in enviados
         if ja_enviado or ja_no_canal:
-            print(f"   ⏭️ Já enviado. Pulando.")
+            print(f"   ⏭️ Já enviado anteriormente")
             continue
 
-        # 1. ODD ERRADA
+        # ─── 1. ODD ERRADA ───
         alertas = []
         for bet_id, valor, label in [
             (ID_GOALS, "Over 2.5", "Over 2.5 gols"),
@@ -1149,44 +1185,62 @@ def processar_jogos(limite_jogos=None):
         if alertas:
             enviar_mensagem(msg_odd_errada(liga_nome, home_nome, away_nome, alertas))
             salvar_odd_errada_hoje(odd_errada_hoje)
-            print(f"   💰 Odd errada")
+            print(f"   💰 ODD ERRADA enviada ({len(alertas)} alerta(s))")
             time.sleep(ESPERA_ENTRE_MSGS)
+        else:
+            print(f"   ⏭️ Odd errada: nenhuma detectada")
 
-        # 2. ENTRADA PRINCIPAL
+        # ─── 2. ENTRADA PRINCIPAL ───
         achou_principal = False
         liga_eh_brasileira = liga_id in LIGAS_VISITANTE_REATIVO
 
-        if (liga_eh_brasileira and
-            mandante["n_jogos"] >= MIN_JOGOS and
-            visitante["n_jogos"] >= MIN_JOGOS and
-            mandante["media_fin"] >= MANDANTE_MIN_FIN and
-            mandante["media_esc"] >= MANDANTE_MIN_ESC and
-            visitante["reativo"]):
+        if not liga_eh_brasileira:
+            print(f"   ⏭️ Principal: liga {liga_id} não é brasileira (só 71/72)")
+        elif mandante["n_jogos"] < MIN_JOGOS:
+            print(f"   ⏭️ Principal: mandante tem {mandante['n_jogos']} jogos (mín {MIN_JOGOS})")
+        elif visitante["n_jogos"] < MIN_JOGOS:
+            print(f"   ⏭️ Principal: visitante tem {visitante['n_jogos']} jogos (mín {MIN_JOGOS})")
+        elif mandante["media_fin"] < MANDANTE_MIN_FIN:
+            print(f"   ⏭️ Principal: mandante não agressivo ({mandante['media_fin']:.1f} < {MANDANTE_MIN_FIN})")
+        elif mandante["media_esc"] < MANDANTE_MIN_ESC:
+            print(f"   ⏭️ Principal: mandante não escanteia ({mandante['media_esc']:.1f} < {MANDANTE_MIN_ESC})")
+        elif not visitante["reativo"]:
+            print(f"   ⏭️ Principal: visitante NÃO reativo")
+        else:
+            print(f"   ✅ Principal: PADRÃO OK! Montando entrada...")
             pernas = montar_principal(mandante, visitante, odds, home_nome, away_nome)
+            print(f"   📊 Pernas montadas: {len(pernas)}")
+
             if len(pernas) >= PERNAS_MIN:
                 odd_final_principal = 1.0
+                tem_odd = False
                 for p in pernas:
                     if p.get("odd"):
                         odd_final_principal *= p["odd"]
+                        tem_odd = True
 
-                if odd_final_principal >= ODD_MIN_FINAL:
-                    achou_principal = True
-                    enviar_mensagem(msg_aviso(liga_nome, home_nome, away_nome, horario_fmt))
-                    time.sleep(ESPERA_ENTRE_MSGS)
-                    enviar_mensagem(msg_principal(liga_nome, home_nome, away_nome, mandante, visitante, pernas))
-                    print(f"   ✅ Principal ({len(pernas)} pernas | odd {odd_final_principal:.2f})")
-                    time.sleep(ESPERA_ENTRE_MSGS)
+                achou_principal = True
+                enviar_mensagem(msg_aviso(liga_nome, home_nome, away_nome, horario_fmt))
+                time.sleep(ESPERA_ENTRE_MSGS)
+                enviar_mensagem(msg_principal(liga_nome, home_nome, away_nome, mandante, visitante, pernas, odd_final_principal if tem_odd else None))
+
+                if tem_odd:
+                    print(f"   ✅ Principal ENVIADA ({len(pernas)} pernas | odd {odd_final_principal:.2f})")
                 else:
-                    print(f"   ⏭️ Odd final baixa ({odd_final_principal:.2f}). Pulando.")
+                    print(f"   ✅ Principal ENVIADA SEM ODD ({len(pernas)} pernas)")
+                time.sleep(ESPERA_ENTRE_MSGS)
+            else:
+                print(f"   ⏭️ Principal: só {len(pernas)} perna(s) (mín {PERNAS_MIN})")
 
-        # 3. ENTRADA NORMAL
+        # ─── 3. ENTRADA NORMAL ───
         valores = buscar_valor_jogo(odds)
         if valores:
+            print(f"   💰 Normal: {len(valores)} mercado(s) com valor")
             enviar_mensagem(msg_aviso(liga_nome, home_nome, away_nome, horario_fmt, "Procurando valor no mercado..."))
             time.sleep(ESPERA_ENTRE_MSGS)
             msg, odd_f = msg_valor(liga_nome, home_nome, away_nome, valores)
             enviar_mensagem(msg)
-            print(f"   ✅ Normal (odd {odd_f:.2f})")
+            print(f"   ✅ Normal ENVIADA (odd {odd_f:.2f})")
             time.sleep(ESPERA_ENTRE_MSGS)
 
             if not bingo_ja:
@@ -1194,6 +1248,8 @@ def processar_jogos(limite_jogos=None):
                     "home": home_nome, "away": away_nome,
                     "mercado": valores[0]["nome"], "odd": valores[0]["odd"]
                 })
+        else:
+            print(f"   ⏭️ Normal: sem valor detectado")
 
         if achou_principal or valores:
             enviados.add(str(fixture_id))
@@ -1201,7 +1257,8 @@ def processar_jogos(limite_jogos=None):
 
         time.sleep(1)
 
-    # 4. BINGO DO DIA
+    # ─── 4. BINGO DO DIA ───
+    print(f"\n📊 Total de jogos com valor no bingo: {len(bingo_entradas)}")
     if not bingo_ja and len(bingo_entradas) >= BINGO_MIN_JOGOS:
         odd_bingo = 1.0
         for e in bingo_entradas:
@@ -1218,9 +1275,15 @@ def processar_jogos(limite_jogos=None):
             msg, _ = msg_bingo(bingo_entradas)
             enviar_mensagem(msg)
             marcar_bingo_enviado()
-            print(f"   🎰 BINGO DO DIA (odd {odd_bingo:.2f})")
+            print(f"   🎰 BINGO DO DIA ENVIADO (odd {odd_bingo:.2f})")
+        else:
+            print(f"   ⏭️ Bingo: odd final {odd_bingo:.2f} < {ODD_BINGO_DIA}")
+    elif bingo_ja:
+        print(f"   ⏭️ Bingo: já enviado hoje")
+    else:
+        print(f"   ⏭️ Bingo: só {len(bingo_entradas)} jogo(s) (mín {BINGO_MIN_JOGOS})")
 
-    # 5. PLACAR MÚLTIPLO
+    # ─── 5. PLACAR MÚLTIPLO ───
     if not placar_ja:
         multipla = montar_placar_multipla(jogos, dados_por_jogo)
         if multipla and len(multipla) >= PLACAR_MIN_JOGOS:
@@ -1235,7 +1298,11 @@ def processar_jogos(limite_jogos=None):
             msg, odd_p = msg_placar(multipla, horario, data_iso)
             enviar_mensagem(msg)
             marcar_placar_enviado()
-            print(f"   🎯 Placar múltiplo (odd {odd_p:.2f})")
+            print(f"   🎯 Placar múltiplo ENVIADO (odd {odd_p:.2f})")
+        else:
+            print(f"   ⏭️ Placar múltiplo: sem jogos suficientes")
+    else:
+        print(f"   ⏭️ Placar múltiplo: já enviado hoje")
 
     salvar_req(REQ_COUNT)
     print(f"\n✅ Ciclo finalizado. Req: {REQ_COUNT}/{LIMITE_DIARIO}")
