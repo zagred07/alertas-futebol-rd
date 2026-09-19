@@ -49,9 +49,6 @@ ODD_ERRADA_MIN     = 1.20
 ODD_ERRADA_MIN_ODD = 1.50
 ODD_VALOR_MIN      = 1.10
 
-MIN_PCT_MANDANTE_ABRE  = 0.40
-MIN_PCT_VISITANTE_LEVA = 0.30
-
 PODER_MEDIA_CASA    = 3.0
 PODER_MAIOR_PLACAR  = 5
 PODER_POSICAO_G4    = 4
@@ -68,7 +65,7 @@ ESPERA_ENTRE_MSGS = 15
 ESPERA_ENTRE_JOGOS = 30
 
 # ─────────────────────────────────────────────
-# ANTI-DUPLICAÇÃO
+# ANTI-DUPLICAÇÃO VIA TELEGRAM
 # ─────────────────────────────────────────────
 
 def ler_ultimas_mensagens(limit=50):
@@ -572,7 +569,7 @@ def escolher_linha_mais_assertiva(lista, linhas_possiveis, min_linha):
     return melhor, melhor_taxa, melhor_acertos
 
 # ─────────────────────────────────────────────
-# ODDS — COM FALLBACK PINNACLE
+# ODDS
 # ─────────────────────────────────────────────
 
 def extrair_odds(odds_data):
@@ -597,7 +594,6 @@ def get_odd(odds, bm_id, bet_id, valor):
     return None
 
 def get_odd_com_fallback(odds, bet_id, valor):
-    """Retorna a odd da Bet365 se tiver, senão da Pinnacle."""
     o365 = get_odd(odds, BET365_ID, bet_id, valor)
     if o365:
         return o365, "bet365"
@@ -1019,57 +1015,56 @@ def msg_aviso(liga, home, away, horario, texto="Padrão identificado. Calculando
     )
 
 def msg_principal(liga, home, away, mandante, visitante, pernas, odd_final=None, todas_odds=False, usando_pinnacle=False):
-    linhas = [
-        "⚽ <b>RD STATS | ESTRATÉGIA VISITANTE REATIVO</b>",
-        "",
-        f"🏆 {liga}",
-        f"🆚 {home} x {away}",
-        "",
-        "━━━━━━━━━━━━━━━━━━━",
-        "",
-        "📊 <b>CONTEXTO</b>",
-        f"🏠 {home} em casa: {mandante['media_fin']:.1f} fin/jogo, {mandante['media_esc']:.1f} esc/jogo ({mandante['n_jogos']} jogos)",
-        f"✈️ {away} fora: {visitante['media_fin_perdendo']:.1f} fin quando perde ({visitante['n_jogos']} jogos)",
-        "✅ Visitante reativo confirmado",
-        f"📊 {home} abre placar: {int(mandante.get('pct_abriu_placar',0)*100)}% | {away} leva 1º: {int(visitante.get('pct_levou_primeiro',0)*100)}%",
-        "",
-        "━━━━━━━━━━━━━━━━━━━",
-        "",
-        "🎯 <b>ENTRADA PRINCIPAL</b>"
-    ]
-    for p in pernas:
-        if p.get("total"):
-            linha = f"• {p['nome']}: {int(p['taxa']*100)}% ({p['acertos']}/{p['total']})"
-        else:
-            linha = f"• {p['nome']}: {int(p['taxa']*100)}%"
-        if p.get("odd"):
-            linha += f" — @ {fmt(p['odd'])}"
-        linhas.append(linha)
-
     taxas = [p["taxa"] for p in pernas if p.get("taxa")]
     pct = int((sum(taxas) / len(taxas)) * 100) if taxas else 0
     nivel = "ALTA" if pct >= 90 else "MÉDIA" if pct >= 80 else "BAIXA"
 
-    linhas += ["", "━━━━━━━━━━━━━━━━━━━", ""]
+    linhas = [
+        "⚽ <b>RD STATS | VISITANTE REATIVO</b>",
+        "",
+        f"📅 {liga} | {home} x {away}",
+        "",
+        "━━━━━━━━━━━━━━━━━━━",
+        "",
+        "🎯 <b>POR QUE ESSA ENTRADA?</b>",
+        f"O {away} é reativo fora: finaliza {visitante['media_fin_perdendo']:.1f} quando perde (média {visitante['media_fin']:.1f}).",
+        f"O {home} é agressivo em casa: {mandante['media_fin']:.1f} fin/jogo e {mandante['media_esc']:.1f} esc/jogo.",
+        "",
+        f"📊 {home} abre placar: {int(mandante.get('pct_abriu_placar',0)*100)}%",
+        f"📊 {away} leva 1º gol: {int(visitante.get('pct_levou_primeiro',0)*100)}%",
+        "",
+        "━━━━━━━━━━━━━━━━━━━",
+        "",
+        "📋 <b>APOSTAS SUGERIDAS</b>"
+    ]
+    for p in pernas:
+        linha = f"✅ {p['nome']} ({int(p['taxa']*100)}%)"
+        if p.get("odd"):
+            linha += f" — @ {fmt(p['odd'])}"
+        linhas.append(linha)
+
+    linhas += [
+        "",
+        "━━━━━━━━━━━━━━━━━━━",
+        ""
+    ]
 
     if odd_final and todas_odds:
         linhas.append(f"💰 <b>ODD FINAL:</b> {fmt(odd_final)}")
     elif odd_final:
         linhas.append(f"💰 <b>ODD FINAL:</b> {fmt(odd_final)} (parcial)")
-        linhas.append("⚠️ Consulte a Bet365 pra odd final")
+        linhas.append("⚠️ Confira a odd na Bet365")
     else:
         linhas.append("⚠️ <b>Odd não disponível na Bet365</b>")
         linhas.append("Confira as odds antes de apostar")
 
     linhas += [
         "",
-        "━━━━━━━━━━━━━━━━━━━",
-        "",
         f"📈 <b>Confiança:</b> {pct}% ({nivel})",
         "",
         "━━━━━━━━━━━━━━━━━━━",
         "",
-        "Cada um sabe o que faz com a informação. 🚀"
+        "🤖 <b>RD Stats</b> | Análise automatizada"
     ]
     return "\n".join(linhas)
 
@@ -1077,8 +1072,7 @@ def msg_valor(liga, home, away, achados):
     linhas = [
         "⚽ <b>RD STATS | ENTRADA</b>",
         "",
-        f"🏆 {liga}",
-        f"🆚 {home} x {away}",
+        f"📅 {liga} | {home} x {away}",
         "",
         "━━━━━━━━━━━━━━━━━━━",
         "",
@@ -1101,7 +1095,7 @@ def msg_valor(liga, home, away, achados):
         "",
         "━━━━━━━━━━━━━━━━━━━",
         "",
-        "Cada um sabe o que faz com a informação. 🚀"
+        "🤖 <b>RD Stats</b> | Análise automatizada"
     ]
     return "\n".join(linhas), odd_final
 
@@ -1109,8 +1103,7 @@ def msg_odd_errada(liga, home, away, alertas):
     linhas = [
         "💰 <b>RD STATS | ODD ERRADA NA BET365</b>",
         "",
-        f"🏆 {liga}",
-        f"🆚 {home} x {away}",
+        f"📅 {liga} | {home} x {away}",
         "",
         "━━━━━━━━━━━━━━━━━━━",
         "",
@@ -1148,7 +1141,7 @@ def msg_bingo(entradas):
         "",
         "━━━━━━━━━━━━━━━━━━━",
         "",
-        "Cada um sabe o que faz com a informação. 🚀"
+        "🤖 <b>RD Stats</b> | Análise automatizada"
     ]
     return "\n".join(linhas), odd_final
 
@@ -1156,7 +1149,7 @@ def msg_bingo_aviso(odd_final):
     return (
         f"🚨🚨🚨 <b>BINGO DETECTADO</b> 🚨🚨🚨\n\n"
         f"Odd final: <b>{fmt(odd_final)}</b>\n\n"
-        f"Cada um sabe o que faz com a informação. 🚀"
+        f"🤖 <b>RD Stats</b>"
     )
 
 def msg_placar(entradas, horario, data_iso):
@@ -1192,7 +1185,7 @@ def msg_placar(entradas, horario, data_iso):
         "",
         "━━━━━━━━━━━━━━━━━━━",
         "",
-        "Cada um sabe o que faz com a informação. 🚀"
+        "🤖 <b>RD Stats</b> | Análise automatizada"
     ]
     return "\n".join(linhas), odd_final
 
@@ -1226,7 +1219,6 @@ def cacar_odds():
         if BET365_ID not in odds:
             continue
 
-        # ODD ERRADA
         alertas = []
         for bet_id, valor, label in [
             (ID_GOALS, "Over 2.5", "Over 2.5 gols"),
@@ -1250,7 +1242,6 @@ def cacar_odds():
             achou = True
             time.sleep(ESPERA_ENTRE_MSGS)
 
-        # VALOR
         valores = buscar_valor_jogo(odds)
         if valores:
             msg, odd_f = msg_valor(liga_nome, home_nome, away_nome, valores)
@@ -1334,7 +1325,6 @@ def processar_jogos(limite_jogos=None):
         odds_data = get_odds_fixture(fixture_id)
         odds = extrair_odds(odds_data)
 
-        # FALLBACK: aceita Pinnacle se não tiver Bet365
         tem_bet365 = BET365_ID in odds
         tem_pinnacle = PINNACLE_ID in odds
 
@@ -1343,7 +1333,7 @@ def processar_jogos(limite_jogos=None):
             continue
 
         if not tem_bet365:
-            print(f"   ⚠️ Sem Bet365 — usando Pinnacle como fallback")
+            print(f"   ⚠️ Sem Bet365 — usando Pinnacle")
 
         print(f"   📊 Mandante: {mandante['n_jogos']}j | abre {int(mandante.get('pct_abriu_placar',0)*100)}%")
         print(f"   📊 Visitante: {visitante['n_jogos']}j | perdendo={visitante['media_fin_perdendo']:.1f} x geral={visitante['media_fin']:.1f} | leva 1º {int(visitante.get('pct_levou_primeiro',0)*100)}%")
@@ -1372,7 +1362,7 @@ def processar_jogos(limite_jogos=None):
             print(f"   ⏭️ Já enviado")
             continue
 
-        # 1. ODD ERRADA (só se tiver Bet365)
+        # 1. ODD ERRADA
         if tem_bet365:
             alertas = []
             for bet_id, valor, label in [
@@ -1395,8 +1385,7 @@ def processar_jogos(limite_jogos=None):
                 print(f"   💰 ODD ERRADA")
                 time.sleep(ESPERA_ENTRE_MSGS)
 
-        # 2. ENTRADA PRINCIPAL (só ligas brasileiras)
-        achou_principal = False
+        # 2. ENTRADA PRINCIPAL
         liga_eh_brasileira = liga_id in LIGAS_VISITANTE_REATIVO
 
         if not liga_eh_brasileira:
@@ -1427,7 +1416,10 @@ def processar_jogos(limite_jogos=None):
                     else:
                         todas_odds = False
 
-                achou_principal = True
+                # MARCA COMO ENVIADO ANTES
+                enviados.add(str(fixture_id))
+                salvar_enviados(enviados)
+
                 enviar_mensagem(msg_aviso(liga_nome, home_nome, away_nome, horario_fmt))
                 time.sleep(ESPERA_ENTRE_MSGS)
                 enviar_mensagem(msg_principal(liga_nome, home_nome, away_nome, mandante, visitante, pernas, odd_final_principal if tem_odd else None, todas_odds, not tem_bet365))
@@ -1442,13 +1434,18 @@ def processar_jogos(limite_jogos=None):
             else:
                 print(f"   ⏭️ Principal: só {len(pernas)} perna(s)")
 
-        # 3. ENTRADA NORMAL (só se tiver Bet365)
+        # 3. ENTRADA NORMAL
         valores = []
         if tem_bet365:
             valores = buscar_valor_jogo(odds)
 
         if valores:
             print(f"   💰 Normal: {len(valores)} mercado(s)")
+
+            # MARCA COMO ENVIADO ANTES
+            enviados.add(str(fixture_id))
+            salvar_enviados(enviados)
+
             enviar_mensagem(msg_aviso(liga_nome, home_nome, away_nome, horario_fmt, "Procurando valor no mercado..."))
             time.sleep(ESPERA_ENTRE_MSGS)
             msg, odd_f = msg_valor(liga_nome, home_nome, away_nome, valores)
@@ -1461,10 +1458,6 @@ def processar_jogos(limite_jogos=None):
                     "home": home_nome, "away": away_nome,
                     "mercado": valores[0]["nome"], "odd": valores[0]["odd"]
                 })
-
-        if achou_principal or valores:
-            enviados.add(str(fixture_id))
-            salvar_enviados(enviados)
 
         time.sleep(1)
 
