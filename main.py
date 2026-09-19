@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import pytz
 import json
 import statistics
+import math
 from collections import defaultdict
 
 API_KEY   = os.getenv("API_FOOTBALL_KEY")
@@ -49,6 +50,15 @@ ODD_ERRADA_MIN     = 1.20
 ODD_ERRADA_MIN_ODD = 1.50
 ODD_VALOR_MIN      = 1.10
 
+# Poisson
+POISSON_MAX_GOLS   = 7
+PLACAR_ODD_MIN     = 5.00
+PLACAR_ODD_MAX     = 20.00
+
+# Ajuste de lambda
+AJUSTE_LAMBDA      = 0.5
+
+# Poder/Fraqueza
 PODER_MEDIA_CASA    = 3.0
 PODER_MAIOR_PLACAR  = 5
 PODER_POSICAO_G4    = 4
@@ -365,6 +375,15 @@ def formatar_data_jogo(horario_iso):
     except:
         return horario_iso[11:16]
 
+def converter_horario_brasilia(horario_iso):
+    """Converte ISO pra horário de Brasília (HH:MM)."""
+    try:
+        dt_jogo = datetime.fromisoformat(horario_iso.replace("Z", "+00:00"))
+        dt_brasilia = dt_jogo.astimezone(pytz.timezone("America/Sao_Paulo"))
+        return dt_brasilia.strftime("%H:%M")
+    except:
+        return horario_iso[11:16]
+
 # ─────────────────────────────────────────────
 # BUSCAS
 # ─────────────────────────────────────────────
@@ -655,7 +674,88 @@ ID_TOTAL_SOG     = 87
 ID_AWAY_SHOTS    = 276
 ID_BOTH_CARDS    = 252
 ID_BOTH_2CARDS   = 300
+
 # ─────────────────────────────────────────────
+# POISSON
+# ─────────────────────────────────────────────
+
+def poisson_probabilidade(k, lamb):
+    """Calcula P(k gols) usando distribuição de Poisson."""
+    if lamb <= 0:
+        return 0
+    return (lamb ** k) * math.exp(-lamb) / math.factorial(k)
+
+def analisar_poder_fraqueza(mandante, visitante, pos_mand=None, pos_vis=None, total_times=20):
+    """Analisa se mandante é poderoso e visitante é fraco."""
+    if not mandante or not visitante:
+        return False, False
+
+    media_casa = mandante.get("media_gols_feitos", 0)
+    max_casa = mandante.get("max_gols", 0)
+    no_g4 = pos_mand is not None and pos_mand <= PODER_POSICAO_G4
+    poderoso = (media_casa >= PODER_MEDIA_CASA) or (max_casa >= PODER_MAIOR_PLACAR) or no_g4
+
+    media_sofre_fora = visitante.get("media_gols_sofridos", 0)
+    pct_der = visitante.get("pct_derrotas", 0)
+    no_z4 = pos_vis is not None and pos_vis > (total_times - FRAQUEZA_POSICAO_Z4)
+    fraco = (media_sofre_fora >= FRAQUEZA_MEDIA_SOFRIDA_FORA) or (pct_der >= FRAQUEZA_PCT_DERROTAS_FORA) or no_z4
+
+    return poderoso, fraco
+
+def poisson_ajustado(mandante, visitante, poderoso, fraco):
+    """Calcula λ ajustado pela análise de contexto."""
+    lambda_casa = mandante.get("media_gols_feitos", 1.5)
+    lambda_fora = visitante.get("media_gols_feitos", 1.0)
+
+    media_sofre_fora = visitante.get("media_gols_sofridos", 0)
+    if media_sofre_fora >= 2.5:
+        lambda_casa += AJUSTE_LAMBDA
+    elif media_sofre_fora >= 2.0:
+        lambda_casa += AJUSTE_LAMBDA * 0.6
+
+    if poderoso:
+        lambda_casa += AJUSTE_LAMBDA * 0.6
+
+    media_sofre_casa = mandante.get("media_gols_sofridos", 0)
+    if media_sofre_casa <= 0.5:
+        lambda_fora -= AJUSTE_LAMBDA * 0.4
+    elif media_sofre_casa >= 2.0:
+        lambda_fora += AJUSTE_LAMBDA * 0.6
+
+    if fraco:
+        lambda_fora -= AJUSTE_LAMBDA * 0.4
+
+    lambda_casa = max(0.5, lambda_casa)
+    lambda_fora = max(0.2, lambda_fora)
+
+    return lambda_casa, lambda_fora
+
+def calcular_placares_poisson(lambda_casa, lambda_fora):
+    """Calcula probabilidade de cada placar (0:0 a 7:7)."""
+    placares = {}
+    for g_casa in range(0, POISSON_MAX_GOLS + 1):
+        for g_fora in range(0, POISSON_MAX_GOLS + 1):
+            p_casa = poisson_probabilidade(g_casa, lambda_casa)
+            p_fora = poisson_probabilidade(g_fora, lambda_fora)
+            placares[f"{g_casa}:{g_fora}"] = p_casa * p_fora
+    return sorted(placares.items(), key=lambda x: x[1], reverse=True)
+
+def escolher_placar_poisson(mandante, visitante, placar_odds, poderoso, fraco):
+    """Escolhe placar mais provável (Poisson) que existe na Bet365."""
+    if not mandante or not visitante or not placar_odds:
+        return None, None, None, None, None
+
+    lambda_casa, lambda_fora = poisson_ajustado(mandante, visitante, poderoso, fraco)
+    placares_ordenados = calcular_placares_poisson(lambda_casa, lambda_fora)
+
+    for placar, prob in placares_ordenados:
+        if placar in placar_odds:
+            odd = placar_odds[placar]
+            if PLACAR_ODD_MIN <= odd <= PLACAR_ODD_MAX:
+                return placar, odd, prob, lambda_casa, lambda_fora
+
+    return None, None, None, None, None
+    # ─────────────────────────────────────────────
 # ENTRADA PRINCIPAL — VISITANTE REATIVO
 # ─────────────────────────────────────────────
 
@@ -665,7 +765,6 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
     if not visitante:
         return []
 
-    # 1. FINALIZAÇÕES DO VISITANTE (OBRIGATÓRIA) — min +6.5
     linha_fin, t_fin, ac_fin = escolher_linha_mais_assertiva(
         visitante["lista_fin"],
         [6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5],
@@ -681,7 +780,6 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
         "odd": odd_fin, "bet_id": ID_AWAY_SHOTS, "valor": f"Over {linha_fin}"
     })
 
-    # 2. CHUTES AO GOL DO VISITANTE
     linha, t, ac = escolher_linha_mais_assertiva(
         visitante["lista_chutes_gol"],
         [1.5, 2.5, 3.5, 4.5],
@@ -694,7 +792,6 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
             "odd": None, "bet_id": None, "valor": None
         })
 
-    # 3. CARTÕES DO VISITANTE
     linha, t, ac = escolher_linha_mais_assertiva(
         visitante["lista_cartoes"],
         [0.5, 1.5, 2.5],
@@ -709,7 +806,6 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
         })
 
     if mandante:
-        # 4. CARTÕES DO MANDANTE
         linha, t, ac = escolher_linha_mais_assertiva(
             mandante["lista_cart"],
             [0.5, 1.5, 2.5],
@@ -723,7 +819,6 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
                 "odd": odd, "bet_id": ID_HOME_CARDS, "valor": f"Over {linha}"
             })
 
-        # 5. ESCANTEIOS DO MANDANTE
         linha, t, ac = escolher_linha_mais_assertiva(
             mandante["lista_esc"],
             [3.5, 4.5, 5.5, 6.5],
@@ -737,7 +832,6 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
                 "odd": odd, "bet_id": ID_HOME_CORN, "valor": f"Over {linha}"
             })
 
-    # 6. MANDANTE OVER 0.5 GOLS
     if mandante and mandante.get("pct_marcou", 0) >= TAXA_MIN_ACERTO:
         odd, _ = get_odd_com_fallback(odds, ID_HOME_TOTAL, "Over 0.5")
         if odd:
@@ -749,7 +843,6 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
                 "odd": odd, "bet_id": ID_HOME_TOTAL, "valor": "Over 0.5"
             })
 
-    # 7. VISITANTE OVER 0.5 GOLS
     if visitante and visitante.get("pct_marcou", 0) >= TAXA_MIN_VIS_GOL:
         odd, _ = get_odd_com_fallback(odds, ID_AWAY_TOTAL, "Over 0.5")
         if odd:
@@ -761,7 +854,6 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
                 "odd": odd, "bet_id": ID_AWAY_TOTAL, "valor": "Over 0.5"
             })
 
-    # 8. AMBOS RECEBEM CARTÃO
     odd_252 = get_odd(odds, BET365_ID, ID_BOTH_CARDS, "Yes")
     odd_300 = get_odd(odds, BET365_ID, ID_BOTH_2CARDS, "Yes")
     odd_80  = get_odd(odds, BET365_ID, ID_CARDS, "Over 3.5")
@@ -788,7 +880,6 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
             "tipo": "ambos"
         })
 
-    # FILTRO DE ODD MÍNIMA
     pernas_filtradas = []
     for p in pernas:
         if p.get("odd"):
@@ -797,7 +888,6 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
         else:
             pernas_filtradas.append(p)
 
-    # ORDENAÇÃO
     pernas_ordenadas = []
     if pernas_filtradas and "finalizações" in pernas_filtradas[0]["nome"]:
         pernas_ordenadas.append(pernas_filtradas[0])
@@ -817,10 +907,11 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
     return pernas_ordenadas[:PERNAS_MAX]
 
 # ─────────────────────────────────────────────
-# ENTRADA NORMAL — VALOR (MÚLTIPLAS PERNAS)
+# ENTRADA NORMAL — VALOR (com todas as casas)
 # ─────────────────────────────────────────────
 
-def buscar_valor_jogo(odds):
+def buscar_valor_jogo_completo(odds):
+    """Busca valor E retorna todas as odds das casas."""
     achados = []
     mercados = [
         (ID_1X2, "Home", "Casa vence"),
@@ -843,126 +934,38 @@ def buscar_valor_jogo(odds):
         if not media:
             continue
         if o365 / media >= ODD_VALOR_MIN:
+            # Coleta todas as odds das casas
+            odds_casas = {"Bet365": o365}
+            opinnacle = get_odd(odds, PINNACLE_ID, bet_id, valor)
+            if opinnacle:
+                odds_casas["Pinnacle"] = opinnacle
+            for bm_id in OUTRAS_CASAS:
+                o = get_odd(odds, bm_id, bet_id, valor)
+                if o:
+                    nome_casa = {2: "Marathonbet", 7: "William Hill", 36: "BetVictor", 11: "1xBet"}.get(bm_id, f"Casa {bm_id}")
+                    odds_casas[nome_casa] = o
             achados.append({
                 "nome": label, "odd": o365, "media": media,
                 "diff": int((o365 / media - 1) * 100),
-                "bet_id": bet_id, "valor": valor
+                "bet_id": bet_id, "valor": valor,
+                "odds_casas": odds_casas
             })
     return achados
 
+def buscar_valor_jogo(odds):
+    """Compatibilidade — retorna só o essencial."""
+    return buscar_valor_jogo_completo(odds)
+
 # ─────────────────────────────────────────────
-# PLACAR MÚLTIPLO
+# PLACAR MÚLTIPLO — COM POISSON
 # ─────────────────────────────────────────────
-
-def eh_poderoso(mandante, posicao, total_times):
-    if not mandante:
-        return False
-    media = mandante.get("media_gols_feitos", 0)
-    maior = mandante.get("max_gols", 0)
-    no_g4 = posicao is not None and posicao <= PODER_POSICAO_G4
-    return (media >= PODER_MEDIA_CASA) or (maior >= PODER_MAIOR_PLACAR) or no_g4
-
-def eh_fraco(visitante, posicao, total_times):
-    if not visitante:
-        return False
-    sofre = visitante.get("media_gols_sofridos", 0)
-    pct_der = visitante.get("pct_derrotas", 0)
-    no_z4 = posicao is not None and posicao > (total_times - FRAQUEZA_POSICAO_Z4)
-    return (sofre >= FRAQUEZA_MEDIA_SOFRIDA_FORA) or (pct_der >= FRAQUEZA_PCT_DERROTAS_FORA) or no_z4
-
-def escolher_placar_com_contexto(mandante, visitante, placar_odds, pos_mand=None, pos_vis=None, total_times=20):
-    if not mandante or not visitante or not placar_odds:
-        return None, None, None
-
-    if mandante.get("max_gols", 0) == 0 and mandante.get("media_gols_feitos", 0) == 0:
-        return None, None, None
-    if visitante.get("max_gols", 0) == 0 and visitante.get("media_gols_feitos", 0) == 0:
-        return None, None, None
-
-    gols_casa = mandante.get("media_gols_feitos", 1.5)
-    gols_fora = visitante.get("media_gols_feitos", 1.0)
-    min_casa = mandante.get("min_gols", 0)
-    max_casa = mandante.get("max_gols", 3)
-    min_fora = visitante.get("min_gols", 0)
-    max_fora = visitante.get("max_gols", 3)
-
-    poderoso = eh_poderoso(mandante, pos_mand, total_times)
-    fraco = eh_fraco(visitante, pos_vis, total_times)
-
-    if poderoso and fraco:
-        candidatos = ["4:0", "5:0", "3:0", "4:1", "5:1", "6:0"]
-    elif poderoso:
-        candidatos = ["3:0", "3:1", "2:0", "2:1", "4:1"]
-    elif fraco:
-        candidatos = ["2:0", "3:0", "2:1", "1:0"]
-    else:
-        candidatos = ["2:1", "1:0", "1:1", "2:0", "0:0"]
-
-    placar = None
-    for c in candidatos:
-        if c in placar_odds and 6.00 <= placar_odds[c] <= 15.00:
-            placar = c
-            break
-
-    if not placar:
-        for c, o in placar_odds.items():
-            if 6.00 <= o <= 15.00:
-                placar = c
-                break
-
-    if not placar:
-        return None, None, None
-
-    lista_gols_casa = mandante.get("lista_gols_feitos", [])
-    lista_gols_fora = visitante.get("lista_gols_feitos", [])
-    lista_sofridos_casa = mandante.get("lista_gols_sofridos", [])
-    lista_sofridos_fora = visitante.get("lista_gols_sofridos", [])
-
-    n_casa = len(lista_gols_casa) or 1
-    n_fora = len(lista_gols_fora) or 1
-
-    pct_casa_2mais = sum(1 for g in lista_gols_casa if g >= 2) / n_casa
-    pct_casa_marca = sum(1 for g in lista_gols_casa if g >= 1) / n_casa
-    pct_fora_2mais = sum(1 for g in lista_gols_fora if g >= 2) / n_fora
-    pct_fora_marca = sum(1 for g in lista_gols_fora if g >= 1) / n_fora
-    pct_sofre_casa_2mais = sum(1 for g in lista_sofridos_casa if g >= 2) / n_casa
-    pct_sofre_fora_2mais = sum(1 for g in lista_sofridos_fora if g >= 2) / n_fora
-
-    media_casa = mandante.get("media_gols_feitos", 1.5)
-    media_fora = visitante.get("media_gols_feitos", 1.0)
-
-    gols_mand_previstos = placar.split(":")[0]
-    gols_vis_previstos = placar.split(":")[1]
-
-    motivo = f"🏠 {mandante.get('nome','Mandante')}: média {media_casa:.2f} gols/jogo em casa, fez 2+ em {int(pct_casa_2mais*100)}%, marca em {int(pct_casa_marca*100)}%"
-    if pct_sofre_casa_2mais >= 0.5:
-        motivo += f", leva 2+ em {int(pct_sofre_casa_2mais*100)}%"
-
-    motivo += f"\n✈️ {visitante.get('nome','Visitante')}: média {media_fora:.2f} gols/jogo fora, fez 2+ em {int(pct_fora_2mais*100)}%, marca em {int(pct_fora_marca*100)}%"
-    if pct_sofre_fora_2mais >= 0.5:
-        motivo += f", leva 2+ em {int(pct_sofre_fora_2mais*100)}%"
-
-    motivo += f"\n⚖️ Por que {placar}: "
-    if float(gols_mand_previstos) >= 2:
-        motivo += f"{mandante.get('nome','Mandante')} faz {gols_mand_previstos} (média {media_casa:.2f})"
-    else:
-        motivo += f"{mandante.get('nome','Mandante')} faz {gols_mand_previstos}"
-
-    if int(gols_vis_previstos) >= 1:
-        motivo += f" | {visitante.get('nome','Visitante')} faz {gols_vis_previstos} (marca em {int(pct_fora_marca*100)}%)"
-    else:
-        motivo += f" | {visitante.get('nome','Visitante')} NÃO faz gol"
-
-    if poderoso and fraco:
-        motivo += "\n💥 PODEROSO x FRACO → possível goleada"
-
-    return placar, placar_odds[placar], motivo
 
 def montar_placar_multipla(jogos, dados_por_jogo):
+    """Agrupa jogos por horário e monta múltipla com Poisson."""
     por_horario = defaultdict(list)
     for jogo in jogos:
-        data_hora = jogo["fixture"]["date"][:16]
-        por_horario[data_hora].append(jogo)
+        horario_brasilia = converter_horario_brasilia(jogo["fixture"]["date"])
+        por_horario[horario_brasilia].append(jogo)
 
     for horario, lista in por_horario.items():
         if len(lista) < PLACAR_MIN_JOGOS:
@@ -977,10 +980,9 @@ def montar_placar_multipla(jogos, dados_por_jogo):
             if not dados.get("placar_odds"):
                 continue
 
-            placar, odd, motivo = escolher_placar_com_contexto(
+            placar, odd, prob, lambda_casa, lambda_fora = escolher_placar_poisson(
                 dados["mandante"], dados["visitante"], dados["placar_odds"],
-                pos_mand=dados.get("pos_mand"), pos_vis=dados.get("pos_vis"),
-                total_times=dados.get("total_times", 20)
+                dados.get("poderoso", False), dados.get("fraco", False)
             )
             if placar and odd:
                 candidatos.append({
@@ -988,7 +990,13 @@ def montar_placar_multipla(jogos, dados_por_jogo):
                     "away": jogo["teams"]["away"]["name"],
                     "placar": placar,
                     "odd": odd,
-                    "motivo": motivo,
+                    "prob": prob,
+                    "lambda_casa": lambda_casa,
+                    "lambda_fora": lambda_fora,
+                    "poderoso": dados.get("poderoso", False),
+                    "fraco": dados.get("fraco", False),
+                    "mandante": dados["mandante"],
+                    "visitante": dados["visitante"],
                     "horario": horario,
                     "data": jogo["fixture"]["date"]
                 })
@@ -1079,9 +1087,18 @@ def msg_valor(liga, home, away, achados):
         "🎯 <b>MERCADO COM VALOR</b>"
     ]
     for a in achados[:PERNAS_MAX]:
-        linhas.append(f"• {a['nome']} — @ {fmt(a['odd'])}")
-        linhas.append(f"   Média das casas: @ {fmt(a['media'])}")
-        linhas.append(f"   Diferença: +{a['diff']}%")
+        linhas.append(f"")
+        linhas.append(f"• {a['nome']}")
+        linhas.append(f"")
+        linhas.append(f"📊 <b>Odds das casas:</b>")
+        for casa, odd in a["odds_casas"].items():
+            if casa == "Bet365":
+                linhas.append(f"• {casa}: @ {fmt(odd)} ← MELHOR")
+            else:
+                linhas.append(f"• {casa}: @ {fmt(odd)}")
+        linhas.append(f"")
+        linhas.append(f"💰 Média: @ {fmt(a['media'])}")
+        linhas.append(f"📈 Diferença: +{a['diff']}%")
         linhas.append("")
 
     odd_final = 1.0
@@ -1164,15 +1181,30 @@ def msg_placar(entradas, horario, data_iso):
     linhas = [
         "🎯 <b>RD STATS | RESULTADO CORRETO MÚLTIPLO</b>",
         "",
-        f"🕐 Todos começam {horario[11:16]}",
+        f"🕐 Todos começam {horario}",
         f"📅 {data_fmt}",
         "",
         "━━━━━━━━━━━━━━━━━━━"
     ]
     odd_final = 1.0
     for e in entradas:
+        mand = e["mandante"]
+        vis = e["visitante"]
+
         linhas.append(f"• {e['home']} x {e['away']} — {e['placar']} @ {fmt(e['odd'])}")
-        linhas.append(f"   {e['motivo']}")
+        linhas.append(f"")
+        linhas.append(f"📊 {e['home']} (casa): média {mand.get('media_gols_feitos',0):.2f} gols/jogo")
+        linhas.append(f"📊 {e['away']} (fora): média {vis.get('media_gols_feitos',0):.2f} gols/jogo")
+
+        if e.get("poderoso") and e.get("fraco"):
+            linhas.append(f"🔥 {e['home']} PODEROSO x {e['away']} FRACO → possível goleada")
+        elif e.get("poderoso"):
+            linhas.append(f"🔥 {e['home']} é PODEROSO em casa")
+        elif e.get("fraco"):
+            linhas.append(f"⚠️ {e['away']} é FRACO fora")
+
+        linhas.append(f"🎯 λ ajustado: {e['home']} {e['lambda_casa']:.2f} | {e['away']} {e['lambda_fora']:.2f}")
+        linhas.append(f"🎯 Probabilidade Poisson: {e['prob']*100:.2f}%")
         linhas.append("")
         odd_final *= e["odd"]
 
@@ -1242,7 +1274,7 @@ def cacar_odds():
             achou = True
             time.sleep(ESPERA_ENTRE_MSGS)
 
-        valores = buscar_valor_jogo(odds)
+        valores = buscar_valor_jogo_completo(odds)
         if valores:
             msg, odd_f = msg_valor(liga_nome, home_nome, away_nome, valores)
             enviar_mensagem(msg)
@@ -1338,6 +1370,7 @@ def processar_jogos(limite_jogos=None):
         print(f"   📊 Mandante: {mandante['n_jogos']}j | abre {int(mandante.get('pct_abriu_placar',0)*100)}%")
         print(f"   📊 Visitante: {visitante['n_jogos']}j | perdendo={visitante['media_fin_perdendo']:.1f} x geral={visitante['media_fin']:.1f} | leva 1º {int(visitante.get('pct_levou_primeiro',0)*100)}%")
 
+        # Dados pro placar múltiplo
         if not placar_ja and tem_bet365:
             placar_odds = {}
             if ID_EXACT in odds[BET365_ID]:
@@ -1348,10 +1381,14 @@ def processar_jogos(limite_jogos=None):
             pos_vis = get_posicao_time(away_id, liga_id)
             tot_times = total_times_liga(liga_id)
 
+            poderoso, fraco = analisar_poder_fraqueza(mandante, visitante, pos_mand, pos_vis, tot_times)
+
             dados_por_jogo[fixture_id] = {
                 "mandante": mandante,
                 "visitante": visitante,
                 "placar_odds": placar_odds,
+                "poderoso": poderoso,
+                "fraco": fraco,
                 "pos_mand": pos_mand,
                 "pos_vis": pos_vis,
                 "total_times": tot_times
@@ -1416,7 +1453,6 @@ def processar_jogos(limite_jogos=None):
                     else:
                         todas_odds = False
 
-                # MARCA COMO ENVIADO ANTES
                 enviados.add(str(fixture_id))
                 salvar_enviados(enviados)
 
@@ -1437,12 +1473,11 @@ def processar_jogos(limite_jogos=None):
         # 3. ENTRADA NORMAL
         valores = []
         if tem_bet365:
-            valores = buscar_valor_jogo(odds)
+            valores = buscar_valor_jogo_completo(odds)
 
         if valores:
             print(f"   💰 Normal: {len(valores)} mercado(s)")
 
-            # MARCA COMO ENVIADO ANTES
             enviados.add(str(fixture_id))
             salvar_enviados(enviados)
 
