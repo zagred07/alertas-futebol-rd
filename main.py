@@ -35,6 +35,7 @@ ALERTA_LIMITE = 6000
 MANDANTE_MIN_FIN   = 12
 MANDANTE_MIN_ESC   = 4
 TAXA_MIN_ACERTO    = 0.70
+TAXA_MIN_VIS_GOL   = 0.85
 MIN_JOGOS          = 10
 MIN_JOGOS_PLACAR   = 5
 PERNAS_MIN         = 2
@@ -377,6 +378,7 @@ def analisar_mandante(jogos, team_id):
     fin, esc, cart = [], [], []
     gols_feitos, gols_sofridos = [], []
     vitorias = 0
+    jogos_marcou = 0
     for j in jogos:
         stats = get_stats_fixture(j["fixture"]["id"])
         s = extrair_stats_jogo(stats, team_id)
@@ -389,6 +391,8 @@ def analisar_mandante(jogos, team_id):
         gols_sofridos.append(gs)
         if gf > gs:
             vitorias += 1
+        if gf > 0:
+            jogos_marcou += 1
         time.sleep(0.1)
     if not fin:
         return None
@@ -402,6 +406,7 @@ def analisar_mandante(jogos, team_id):
         "min_gols": min(gols_feitos),
         "max_gols": max(gols_feitos),
         "sempre_marca": all(g > 0 for g in gols_feitos),
+        "pct_marcou": jogos_marcou / len(jogos) if jogos else 0,
         "pct_vitorias": vitorias / len(jogos) if jogos else 0,
         "lista_fin": fin,
         "lista_esc": esc,
@@ -415,6 +420,7 @@ def analisar_visitante(jogos, team_id):
     v, e, d = [], [], []
     gols_feitos, gols_sofridos = [], []
     derrotas = 0
+    jogos_marcou = 0
     for j in jogos:
         stats = get_stats_fixture(j["fixture"]["id"])
         s = extrair_stats_jogo(stats, team_id)
@@ -425,6 +431,8 @@ def analisar_visitante(jogos, team_id):
         gs = get_gols_sofridos(j, team_id)
         gols_feitos.append(gf)
         gols_sofridos.append(gs)
+        if gf > 0:
+            jogos_marcou += 1
         if gf > gs:
             v.append(s["finalizacoes"])
         elif gf < gs:
@@ -448,6 +456,7 @@ def analisar_visitante(jogos, team_id):
         "min_gols": min(gols_feitos),
         "max_gols": max(gols_feitos),
         "pct_derrotas": derrotas / len(jogos) if jogos else 0,
+        "pct_marcou": jogos_marcou / len(jogos) if jogos else 0,
         "reativo": reativo,
         "lista_fin": fin,
         "lista_chutes_gol": chutes,
@@ -526,18 +535,22 @@ def detectar_odd_errada(odds, bet_id, valor, nome):
 # IDs DOS MERCADOS
 # ─────────────────────────────────────────────
 
-ID_GOALS      = 5
-ID_BTTS       = 8
-ID_EXACT      = 10
-ID_CORNERS    = 45
-ID_CARDS      = 80
-ID_HOME_CARDS = 82
-ID_AWAY_CARDS = 83
-ID_HOME_CORN  = 57
-ID_AWAY_CORN  = 58
-ID_TOTAL_SHOT = 211
-ID_TOTAL_SOG  = 87
-ID_AWAY_SHOTS = 276
+ID_GOALS         = 5
+ID_BTTS          = 8
+ID_EXACT         = 10
+ID_HOME_TOTAL    = 16
+ID_AWAY_TOTAL    = 17
+ID_CORNERS       = 45
+ID_CARDS         = 80
+ID_HOME_CARDS    = 82
+ID_AWAY_CARDS    = 83
+ID_HOME_CORN     = 57
+ID_AWAY_CORN     = 58
+ID_TOTAL_SHOT    = 211
+ID_TOTAL_SOG     = 87
+ID_AWAY_SHOTS    = 276
+ID_BOTH_CARDS    = 252
+ID_BOTH_2CARDS   = 300
 # ─────────────────────────────────────────────
 # ENTRADA PRINCIPAL — VISITANTE REATIVO
 # ─────────────────────────────────────────────
@@ -548,14 +561,14 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
     if not visitante:
         return []
 
-    # ─── FINALIZAÇÕES DO VISITANTE — OBRIGATÓRIA ───
+    # ─── 1. FINALIZAÇÕES DO VISITANTE (OBRIGATÓRIA) ───
     linha_fin, t_fin, ac_fin = escolher_linha_mais_assertiva(
         visitante["lista_fin"],
         [7.5, 8.5, 9.5, 10.5, 11.5, 12.5],
         min_linha=7.5
     )
     if linha_fin is None:
-        return []  # sem finalização = sem entrada principal
+        return []
 
     odd_fin = get_odd(odds, BET365_ID, ID_AWAY_SHOTS, f"Over {linha_fin}")
     pernas.append({
@@ -564,7 +577,7 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
         "odd": odd_fin, "bet_id": ID_AWAY_SHOTS, "valor": f"Over {linha_fin}"
     })
 
-    # ─── CHUTES AO GOL DO VISITANTE ───
+    # ─── 2. CHUTES AO GOL DO VISITANTE (contexto) ───
     linha, t, ac = escolher_linha_mais_assertiva(
         visitante["lista_chutes_gol"],
         [1.5, 2.5, 3.5, 4.5],
@@ -577,7 +590,7 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
             "odd": None, "bet_id": None, "valor": None
         })
 
-    # ─── CARTÕES DO VISITANTE ───
+    # ─── 3. CARTÕES DO VISITANTE ───
     linha, t, ac = escolher_linha_mais_assertiva(
         visitante["lista_cartoes"],
         [0.5, 1.5, 2.5],
@@ -591,7 +604,7 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
             "odd": odd, "bet_id": ID_AWAY_CARDS, "valor": f"Over {linha}"
         })
 
-    # ─── CARTÕES DO MANDANTE ───
+    # ─── 4. CARTÕES DO MANDANTE ───
     if mandante:
         linha, t, ac = escolher_linha_mais_assertiva(
             mandante["lista_cart"],
@@ -606,7 +619,7 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
                 "odd": odd, "bet_id": ID_HOME_CARDS, "valor": f"Over {linha}"
             })
 
-        # ─── ESCANTEIOS DO MANDANTE ───
+        # ─── 5. ESCANTEIOS DO MANDANTE ───
         linha, t, ac = escolher_linha_mais_assertiva(
             mandante["lista_esc"],
             [3.5, 4.5, 5.5, 6.5],
@@ -620,6 +633,45 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
                 "odd": odd, "bet_id": ID_HOME_CORN, "valor": f"Over {linha}"
             })
 
+    # ─── 6. MANDANTE OVER 0.5 GOLS (ID 16) ───
+    if mandante and mandante.get("pct_marcou", 0) >= TAXA_MIN_ACERTO:
+        odd = get_odd(odds, BET365_ID, ID_HOME_TOTAL, "Over 0.5")
+        if odd:
+            pernas.append({
+                "nome": f"{home_nome} marca (+0.5 gols)",
+                "taxa": mandante["pct_marcou"], "acertos": int(mandante["pct_marcou"] * mandante["n_jogos"]), "total": mandante["n_jogos"],
+                "odd": odd, "bet_id": ID_HOME_TOTAL, "valor": "Over 0.5"
+            })
+
+    # ─── 7. VISITANTE OVER 0.5 GOLS (ID 17) — só se taxa ≥ 85% ───
+    if visitante and visitante.get("pct_marcou", 0) >= TAXA_MIN_VIS_GOL:
+        odd = get_odd(odds, BET365_ID, ID_AWAY_TOTAL, "Over 0.5")
+        if odd:
+            pernas.append({
+                "nome": f"{away_nome} marca (+0.5 gols)",
+                "taxa": visitante["pct_marcou"], "acertos": int(visitante["pct_marcou"] * visitante["n_jogos"]), "total": visitante["n_jogos"],
+                "odd": odd, "bet_id": ID_AWAY_TOTAL, "valor": "Over 0.5"
+            })
+
+    # ─── 8. AMBOS RECEBEM CARTÃO (252 ou 300) ───
+    odd_252 = get_odd(odds, BET365_ID, ID_BOTH_CARDS, "Yes")
+    odd_300 = get_odd(odds, BET365_ID, ID_BOTH_2CARDS, "Yes")
+
+    if odd_252 and (not odd_300 or odd_252 >= 1.30):
+        pernas.append({
+            "nome": "Ambos recebem cartão",
+            "taxa": 0.75, "acertos": 0, "total": 0,
+            "odd": odd_252, "bet_id": ID_BOTH_CARDS, "valor": "Yes",
+            "tipo": "ambos"
+        })
+    elif odd_300:
+        pernas.append({
+            "nome": "Ambos recebem 2+ cartões",
+            "taxa": 0.70, "acertos": 0, "total": 0,
+            "odd": odd_300, "bet_id": ID_BOTH_2CARDS, "valor": "Yes",
+            "tipo": "ambos"
+        })
+
     # ─── FILTRO DE ODD MÍNIMA POR PERNA (1.20) ───
     pernas_filtradas = []
     for p in pernas:
@@ -629,12 +681,24 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
         else:
             pernas_filtradas.append(p)
 
+    # ─── ORDENAR POR TAXA DE ACERTO (maior primeiro), mantendo finalização ───
+    # Finalização já está na frente (adicionada primeiro) e é obrigatória
+    pernas_ordenadas = []
+    if pernas_filtradas and "finalizações" in pernas_filtradas[0]["nome"]:
+        pernas_ordenadas.append(pernas_filtradas[0])
+        resto = pernas_filtradas[1:]
+        resto.sort(key=lambda x: x.get("taxa", 0), reverse=True)
+        pernas_ordenadas.extend(resto)
+    else:
+        pernas_filtradas.sort(key=lambda x: x.get("taxa", 0), reverse=True)
+        pernas_ordenadas = pernas_filtradas
+
     # ─── PRECISA TER PELO MENOS 2 PERNAS COM ODD ───
-    com_odd = [p for p in pernas_filtradas if p.get("odd")]
+    com_odd = [p for p in pernas_ordenadas if p.get("odd")]
     if len(com_odd) < PERNAS_MIN:
         return []
 
-    return pernas_filtradas[:PERNAS_MAX]
+    return pernas_ordenadas[:PERNAS_MAX]
 
 # ─────────────────────────────────────────────
 # ENTRADA NORMAL — VALOR
@@ -825,7 +889,10 @@ def msg_principal(liga, home, away, mandante, visitante, pernas):
         "🎯 <b>ENTRADA PRINCIPAL</b>"
     ]
     for p in pernas:
-        linha = f"• {p['nome']}: {int(p['taxa']*100)}% ({p['acertos']}/{p['total']})"
+        if p.get("total"):
+            linha = f"• {p['nome']}: {int(p['taxa']*100)}% ({p['acertos']}/{p['total']})"
+        else:
+            linha = f"• {p['nome']}: {int(p['taxa']*100)}%"
         if p.get("odd"):
             linha += f" — @ {fmt(p['odd'])}"
         linhas.append(linha)
@@ -1085,7 +1152,7 @@ def processar_jogos(limite_jogos=None):
             print(f"   💰 Odd errada")
             time.sleep(ESPERA_ENTRE_MSGS)
 
-        # 2. ENTRADA PRINCIPAL — SÓ LIGAS BRASILEIRAS
+        # 2. ENTRADA PRINCIPAL
         achou_principal = False
         liga_eh_brasileira = liga_id in LIGAS_VISITANTE_REATIVO
 
