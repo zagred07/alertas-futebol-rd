@@ -1,3 +1,4 @@
+
 import requests
 import time
 import os
@@ -23,15 +24,15 @@ BET365_ID    = 8
 PINNACLE_ID  = 4
 OUTRAS_CASAS = [2, 7, 36, 11]
 
-ARQUIVO_ENVIADOS  = "jogos_enviados.json"
-ARQUIVO_CACHE     = "cache_stats.json"
-ARQUIVO_REQ       = "req_count.json"
-ARQUIVO_BINGO     = "bingo_do_dia.json"
-ARQUIVO_PLACAR    = "placar_do_dia.json"
-ARQUIVO_ODD_ERR   = "odd_errada_hoje.json"
-ARQUIVO_STANDINGS = "standings_cache.json"
-ARQUIVO_EVENTS    = "cache_events.json"
-ARQUIVO_CACADOR   = "cacador_odds.json"
+ARQUIVO_ENVIADOS     = "jogos_enviados.json"
+ARQUIVO_CACHE        = "cache_stats.json"
+ARQUIVO_REQ          = "req_count.json"
+ARQUIVO_BINGO        = "bingo_do_dia.json"
+ARQUIVO_PLACAR_HORA  = "placar_por_horario.json"
+ARQUIVO_ODD_ERR      = "odd_errada_hoje.json"
+ARQUIVO_STANDINGS    = "standings_cache.json"
+ARQUIVO_EVENTS       = "cache_events.json"
+ARQUIVO_CACADOR      = "cacador_odds.json"
 
 LIMITE_DIARIO = 7000
 ALERTA_LIMITE = 6000
@@ -49,7 +50,7 @@ ODD_BINGO_DIA      = 3.00
 ODD_ERRADA_MIN     = 1.25
 ODD_ERRADA_MAX     = 1.40
 ODD_ERRADA_MIN_ODD = 1.50
-ODD_VALOR_MIN      = 1.25
+ODD_VALOR_MIN      = 1.15
 
 POISSON_MAX_GOLS   = 7
 PLACAR_ODD_MIN     = 6.00
@@ -344,11 +345,23 @@ def bingo_ja_enviado_hoje():
 def marcar_bingo_enviado():
     _marcar_enviado_hoje(ARQUIVO_BINGO)
 
-def placar_ja_enviado_hoje():
-    return _ja_enviado_hoje(ARQUIVO_PLACAR)
+# ── PLACAR POR HORÁRIO (novo) ──
 
-def marcar_placar_enviado():
-    _marcar_enviado_hoje(ARQUIVO_PLACAR)
+def carregar_placar_horarios():
+    """Retorna dict com horários já enviados hoje."""
+    if os.path.exists(ARQUIVO_PLACAR_HORA):
+        try:
+            with open(ARQUIVO_PLACAR_HORA) as f:
+                d = json.load(f)
+            if d.get("data") == _hoje_str():
+                return set(d.get("horarios", []))
+        except:
+            pass
+    return set()
+
+def salvar_placar_horarios(horarios):
+    with open(ARQUIVO_PLACAR_HORA, "w") as f:
+        json.dump({"data": _hoje_str(), "horarios": list(horarios)}, f)
 
 def carregar_odd_errada_hoje():
     if os.path.exists(ARQUIVO_ODD_ERR):
@@ -817,28 +830,23 @@ def poisson_ajustado(mandante, visitante, gols_esperados_mand, gols_esperados_vi
     return lambda_casa, lambda_fora
 
 def calcular_placares_possiveis(mandante, visitante):
-    """Analisa TODOS os jogos da temporada e retorna placares possíveis + placar mais comum."""
     placares_validos = []
     media_casa = mandante.get("media_gols_feitos", 1.5)
     max_casa = mandante.get("max_gols", 3)
     lista_gols_casa = mandante.get("lista_gols_feitos", [])
     n_casa = len(lista_gols_casa) or 1
-
     media_fora = visitante.get("media_gols_feitos", 1.0)
     max_fora = visitante.get("max_gols", 3)
     lista_gols_fora = visitante.get("lista_gols_feitos", [])
     n_fora = len(lista_gols_fora) or 1
-
     limite_casa = min(max_casa, int(media_casa) + 1)
     limite_fora = min(max_fora, int(media_fora) + 1)
 
-    # Placar mais frequente do mandante em casa
     placares_casa = {}
     for g in lista_gols_casa:
         placares_casa[g] = placares_casa.get(g, 0) + 1
     placar_comum_casa = max(placares_casa, key=placares_casa.get) if placares_casa else 1
 
-    # Placar mais frequente do visitante fora
     placares_fora = {}
     for g in lista_gols_fora:
         placares_fora[g] = placares_fora.get(g, 0) + 1
@@ -1075,15 +1083,21 @@ def buscar_valor_jogo(odds):
 # PLACAR MÚLTIPLO
 # ─────────────────────────────────────────────
 
-def montar_placar_multipla(jogos, dados_por_jogo):
+def montar_placar_multipla(jogos, dados_por_jogo, horarios_ja_enviados):
+    """Agrupa jogos por horário. Só retorna horários que ainda não foram enviados."""
     por_horario = defaultdict(list)
     for jogo in jogos:
         horario_brasilia = converter_horario_brasilia(jogo["fixture"]["date"])
         por_horario[horario_brasilia].append(jogo)
 
-    for horario, lista in por_horario.items():
+    for horario, lista in sorted(por_horario.items()):
+        # Se já mandou esse horário → pula
+        if horario in horarios_ja_enviados:
+            continue
+
         if len(lista) < PLACAR_MIN_JOGOS:
             continue
+
         candidatos = []
         for jogo in lista:
             fid = jogo["fixture"]["id"]
@@ -1313,7 +1327,7 @@ def processar_jogos(limite_jogos=None):
 
     bingo_entradas = []
     bingo_ja = bingo_ja_enviado_hoje()
-    placar_ja = placar_ja_enviado_hoje()
+    horarios_placar_ja = carregar_placar_horarios()
     odd_errada_hoje = carregar_odd_errada_hoje()
     dados_por_jogo = {}
     msgs_canal = ler_ultimas_mensagens(50)
@@ -1367,7 +1381,8 @@ def processar_jogos(limite_jogos=None):
         print(f"   📊 Mandante: {mandante['n_jogos']}j | abre {int(mandante.get('pct_abriu_placar',0)*100)}%")
         print(f"   📊 Visitante: {visitante['n_jogos']}j | perdendo={visitante['media_fin_perdendo']:.1f} x geral={visitante['media_fin']:.1f}")
 
-        if not placar_ja and tem_bet365:
+        # Sempre coleta dados pro placar (não depende de horários já enviados)
+        if tem_bet365:
             placar_odds = {}
             if 10 in odds[BET365_ID]:
                 for v, o in odds[BET365_ID][10]:
@@ -1485,17 +1500,23 @@ def processar_jogos(limite_jogos=None):
             marcar_bingo_enviado()
             print(f"   🎰 BINGO ENVIADO (odd {odd_bingo:.2f})")
 
-    if not placar_ja:
-        multipla = montar_placar_multipla(jogos, dados_por_jogo)
-        if multipla and len(multipla) >= PLACAR_MIN_JOGOS:
-            enviar_mensagem("🎯 <b>RD STATS | RESULTADO CORRETO MÚLTIPLO</b>\n\nAnalisando placares do dia...\n\n" f"🎯 {len(multipla)} jogos no mesmo horário")
-            time.sleep(ESPERA_ENTRE_MSGS)
-            horario = multipla[0]["horario"]
-            data_iso = multipla[0]["data"]
-            msg, odd_p = msg_placar(multipla, horario, data_iso)
-            enviar_mensagem(msg)
-            marcar_placar_enviado()
-            print(f"   🎯 Placar múltiplo ENVIADO (odd {odd_p:.2f})")
+    # PLACAR MÚLTIPLO (1x por horário)
+    print(f"\n🎯 Placar: horários já enviados hoje: {horarios_placar_ja}")
+    multipla = montar_placar_multipla(jogos, dados_por_jogo, horarios_placar_ja)
+    if multipla and len(multipla) >= PLACAR_MIN_JOGOS:
+        horario = multipla[0]["horario"]
+        data_iso = multipla[0]["data"]
+
+        enviar_mensagem("🎯 <b>RD STATS | RESULTADO CORRETO MÚLTIPLO</b>\n\nAnalisando placares do dia...\n\n" f"🎯 {len(multipla)} jogos no horário {horario}")
+        time.sleep(ESPERA_ENTRE_MSGS)
+        msg, odd_p = msg_placar(multipla, horario, data_iso)
+        enviar_mensagem(msg)
+
+        horarios_placar_ja.add(horario)
+        salvar_placar_horarios(horarios_placar_ja)
+        print(f"   🎯 Placar múltiplo ENVIADO ({horario} | odd {odd_p:.2f})")
+    else:
+        print(f"   ⏭️ Placar: nenhum horário novo com 3+ jogos")
 
     salvar_req(REQ_COUNT)
     print(f"\n✅ Ciclo finalizado. Req: {REQ_COUNT}/{LIMITE_DIARIO}")
@@ -1524,4 +1545,4 @@ if __name__ == "__main__":
                     ultimo_principal = ts
                 except Exception as e:
                     print(f"Erro no ciclo: {e}")
-        time.sleep(60) 
+        time.sleep(60)
