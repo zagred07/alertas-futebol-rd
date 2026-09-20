@@ -74,6 +74,22 @@ ESPERA_ENTRE_MSGS = 30
 ESPERA_ENTRE_JOGOS = 30
 
 # ─────────────────────────────────────────────
+# MERCADOS E LIMITES
+# ─────────────────────────────────────────────
+
+MERCADOS_ODD_ERRADA = {
+    6:   {"nome": "Gols 1ºT",            "limites": ["Over 0.5", "Over 1.5"]},
+    8:   {"nome": "Ambas Marcam",        "limites": ["Yes", "No"]},
+    45:  {"nome": "Escanteios Totais",   "limites": ["Over 7.5", "Over 8.5", "Over 9.5"]},
+    77:  {"nome": "Escanteios 1ºT",      "limites": ["Over 3.5", "Over 4.5", "Over 5.5"]},
+    82:  {"nome": "Cartões Mandante",    "limites": ["Over 0.5", "Over 1.5"]},
+    83:  {"nome": "Cartões Visitante",   "limites": ["Over 0.5", "Over 1.5"]},
+    87:  {"nome": "Chutes ao Gol Totais","limites": ["Over 6.5", "Over 7.5", "Over 8.5"]},
+    155: {"nome": "Amarelos 1ºT",        "limites": ["Over 0.5", "Over 1.5"]},
+    211: {"nome": "Finalizações Totais", "limites": ["Over 20.5", "Over 25.5"]},
+}
+
+# ─────────────────────────────────────────────
 # ANTI-DUPLICAÇÃO
 # ─────────────────────────────────────────────
 
@@ -664,72 +680,52 @@ def media_outras_casas(odds, bet_id, valor):
     return statistics.mean(valores)
 
 # ─────────────────────────────────────────────
-# MERCADOS PARA ODD ERRADA (FOCO)
-# ─────────────────────────────────────────────
-
-MERCADOS_ODD_ERRADA = {
-    6: "Gols 1ºT",
-    8: "Ambas Marcam",
-    45: "Escanteios Totais",
-    77: "Escanteios 1ºT",
-    82: "Cartões Mandante",
-    83: "Cartões Visitante",
-    87: "Chutes ao Gol Totais",
-    155: "Amarelos 1ºT",
-    211: "Finalizações Totais",
-}
-
-# ─────────────────────────────────────────────
 # VALIDAÇÃO MULTI-CASAS (BTTS)
 # ─────────────────────────────────────────────
 
 def validar_mercado_multicasas(odds, bet_id, valor_365, o365):
     if not o365:
         return False
-
-    # Para BTTS (Yes/No)
-    if bet_id == 8:  # ID_BTTS
+    if bet_id == 8:
         yes_365 = get_odd(odds, BET365_ID, 8, "Yes")
         no_365 = get_odd(odds, BET365_ID, 8, "No")
         if not (yes_365 and no_365):
             return True
         sentido_365 = "yes" if yes_365 > no_365 else "no"
-
         votos_discordam = 0
-        votos_concordam = 0
         for bm_id in [PINNACLE_ID, 2, 7, 36, 11]:
             yes_ref = get_odd(odds, bm_id, 8, "Yes")
             no_ref = get_odd(odds, bm_id, 8, "No")
             if yes_ref and no_ref:
                 sentido_ref = "yes" if yes_ref > no_ref else "no"
-                if sentido_ref == sentido_365:
-                    votos_concordam += 1
-                else:
+                if sentido_ref != sentido_365:
                     votos_discordam += 1
-
         if votos_discordam >= 2:
-            print(f"   ⚠️ BTTS invertido! Bet365: {sentido_365} | Discordam: {votos_discordam} casas")
+            print(f"   ⚠️ BTTS invertido!")
             return False
         return True
-
     return True
 
 # ─────────────────────────────────────────────
-# DETECTAR ODD ERRADA (FOCO EM 9 MERCADOS)
+# DETECTAR ODD ERRADA (9 MERCADOS, 1 ALERTA)
 # ─────────────────────────────────────────────
 
 def detectar_odd_errada_focado(odds):
-    """Percorre SÓ os 9 mercados prioritários e retorna o MELHOR alerta."""
+    """Percorre SÓ os 9 mercados com limites e retorna o MELHOR alerta."""
     if BET365_ID not in odds:
         return None
 
     melhores = []
 
-    for bet_id, nome in MERCADOS_ODD_ERRADA.items():
+    for bet_id, config in MERCADOS_ODD_ERRADA.items():
         if bet_id not in odds[BET365_ID]:
             continue
 
         for valor_365, odd_365 in odds[BET365_ID][bet_id]:
+            # FILTRO: só valores permitidos
+            if valor_365 not in config["limites"]:
+                continue
+
             try:
                 odd_float = float(odd_365)
             except:
@@ -748,23 +744,34 @@ def detectar_odd_errada_focado(odds):
 
             diff = odd_float / media
             if ODD_ERRADA_MIN <= diff <= ODD_ERRADA_MAX:
+                # Coleta TODAS as casas
+                odds_casas = {}
+                opinnacle = get_odd(odds, PINNACLE_ID, bet_id, valor_365)
+                if opinnacle:
+                    odds_casas["Pinnacle"] = opinnacle
+                for bm_id in OUTRAS_CASAS:
+                    o = get_odd(odds, bm_id, bet_id, valor_365)
+                    if o:
+                        nome_casa = {2: "Marathonbet", 7: "William Hill", 36: "BetVictor", 11: "1xBet"}.get(bm_id, f"Casa {bm_id}")
+                        odds_casas[nome_casa] = o
+
                 melhores.append({
-                    "mercado": nome,
+                    "mercado": config["nome"],
                     "valor": valor_365,
                     "bet365": odd_float,
                     "media": media,
                     "diff": int((diff - 1) * 100),
                     "bet_id": bet_id,
+                    "odds_casas": odds_casas,
                 })
 
     if not melhores:
         return None
-
     melhores.sort(key=lambda x: x["diff"], reverse=True)
     return melhores[0]
 
 # ─────────────────────────────────────────────
-# POISSON (Placar Exato)
+# POISSON
 # ─────────────────────────────────────────────
 
 def poisson_probabilidade(k, lamb):
@@ -792,14 +799,12 @@ def calcular_gols_esperados_por_nivel(mandante, visitante, nivel_adv_mand, nivel
         gols_mand = mandante_por_nivel.get("media_fraco", 0) or mandante.get("media_gols_feitos", 1.5)
     else:
         gols_mand = mandante_por_nivel.get("media_medio", 0) or mandante.get("media_gols_feitos", 1.5)
-
     if nivel_adv_vis == "forte":
         gols_vis = visitante_por_nivel.get("media_forte", 0) or visitante.get("media_gols_feitos", 1.0)
     elif nivel_adv_vis == "fraco":
         gols_vis = visitante_por_nivel.get("media_fraco", 0) or visitante.get("media_gols_feitos", 1.0)
     else:
         gols_vis = visitante_por_nivel.get("media_medio", 0) or visitante.get("media_gols_feitos", 1.0)
-
     if gols_mand == 0:
         gols_mand = mandante.get("media_gols_feitos", 1.5)
     if gols_vis == 0:
@@ -999,7 +1004,7 @@ def montar_principal(mandante, visitante, odds, home_nome, away_nome):
     return pernas_ordenadas[:PERNAS_MAX]
 
 # ─────────────────────────────────────────────
-# ENTRADA NORMAL — VALOR (FOCO EM 9 MERCADOS)
+# ENTRADA NORMAL — VALOR (9 MERCADOS)
 # ─────────────────────────────────────────────
 
 def buscar_valor_jogo_completo(odds):
@@ -1013,13 +1018,14 @@ def buscar_valor_jogo_completo(odds):
         (45, "Over 9.5", "Mais de 9,5 escanteios"),
         (77, "Over 4.5", "Mais de 4,5 escanteios 1ºT"),
         (77, "Over 5.5", "Mais de 5,5 escanteios 1ºT"),
-        (82, "Over 1.5", "Mandante +1,5 cartões"),
-        (83, "Over 1.5", "Visitante +1,5 cartões"),
+        (82, "Over 0.5", "Mandante +0,5 cartões"),
+        (83, "Over 0.5", "Visitante +0,5 cartões"),
         (87, "Over 8.5", "Mais de 8,5 chutes ao gol"),
         (87, "Over 9.5", "Mais de 9,5 chutes ao gol"),
+        (155, "Over 0.5", "Mais de 0,5 amarelos 1ºT"),
         (155, "Over 1.5", "Mais de 1,5 amarelos 1ºT"),
+        (211, "Over 20.5", "Mais de 20,5 finalizações"),
         (211, "Over 25.5", "Mais de 25,5 finalizações"),
-        (211, "Over 30.5", "Mais de 30,5 finalizações"),
     ]
 
     for bet_id, valor, label in mercados:
@@ -1158,11 +1164,16 @@ def msg_valor(liga, home, away, achados):
     linhas += ["", f"💰 <b>ODD FINAL:</b> {fmt(odd_final)}", "", "━━━━━━━━━━━━━━━━━━━", "", "📊 <b>DE ONDE VEM O VALOR</b>"]
 
     for a in achados[:PERNAS_MAX]:
-        casas_str = " | ".join([f"{c} @ {fmt(o)}" for c, o in list(a["odds_casas"].items())[:3]])
-        linhas.append(f"• {a['nome']}: {casas_str}")
+        linhas.append(f"• {a['nome']}:")
+        for casa, odd in list(a["odds_casas"].items())[:4]:
+            if casa == "Bet365":
+                linhas.append(f"   {casa}: @ {fmt(odd)} ← MELHOR")
+            else:
+                linhas.append(f"   {casa}: @ {fmt(odd)}")
         linhas.append(f"   Média: @ {fmt(a['media'])} (+{a['diff']}%)")
+        linhas.append("")
 
-    linhas += ["", "━━━━━━━━━━━━━━━━━━━", "", "🤖 <b>RD Stats</b> | Análise automatizada"]
+    linhas += ["━━━━━━━━━━━━━━━━━━━", "", "🤖 <b>RD Stats</b> | Análise automatizada"]
     return "\n".join(linhas), odd_final
 
 def msg_odd_errada(liga, home, away, alerta):
@@ -1172,11 +1183,15 @@ def msg_odd_errada(liga, home, away, alerta):
         "━━━━━━━━━━━━━━━━━━━", "",
         f"⚠️ Bet365 pagando +{alerta['diff']}% acima:", "",
         f"• {alerta['mercado']} ({alerta['valor']})",
-        f"   Bet365: @ {fmt(alerta['bet365'])}",
-        f"   Média casas: @ {fmt(alerta['media'])}",
-        "", "━━━━━━━━━━━━━━━━━━━", "",
-        "🤖 <b>RD Stats</b>"
+        f"   Bet365: @ {fmt(alerta['bet365'])}"
     ]
+
+    # Mostra TODAS as casas
+    for casa, odd in alerta["odds_casas"].items():
+        linhas.append(f"   {casa}: @ {fmt(odd)}")
+
+    linhas.append(f"   Média: @ {fmt(alerta['media'])}")
+    linhas += ["", "━━━━━━━━━━━━━━━━━━━", "", "🤖 <b>RD Stats</b>"]
     return "\n".join(linhas)
 
 def msg_bingo(entradas):
@@ -1365,7 +1380,7 @@ def processar_jogos(limite_jogos=None):
             print(f"   ⏭️ Já enviado")
             continue
 
-        # ODD ERRADA (só 1 alerta por jogo, máx 3 por ciclo)
+        # ODD ERRADA
         if tem_bet365 and odd_errada_enviadas < 3:
             alerta = detectar_odd_errada_focado(odds)
             if alerta:
@@ -1411,17 +1426,12 @@ def processar_jogos(limite_jogos=None):
                 enviar_mensagem(msg_aviso(liga_nome, home_nome, away_nome, horario_fmt))
                 time.sleep(ESPERA_ENTRE_MSGS)
                 enviar_mensagem(msg_principal(liga_nome, home_nome, away_nome, mandante, visitante, pernas, odd_final_principal if tem_odd else None, todas_odds, not tem_bet365))
-                if tem_odd and todas_odds:
-                    print(f"   ✅ Principal ENVIADA (odd {odd_final_principal:.2f})")
-                elif tem_odd:
-                    print(f"   ✅ Principal ENVIADA (odd {odd_final_principal:.2f} parcial)")
-                else:
-                    print(f"   ✅ Principal ENVIADA SEM ODD")
+                print(f"   ✅ Principal ENVIADA")
                 time.sleep(ESPERA_ENTRE_MSGS)
             else:
                 print(f"   ⏭️ Principal: só {len(pernas)} perna(s)")
 
-        # ENTRADA NORMAL (máx 3 por ciclo)
+        # ENTRADA NORMAL
         valores = []
         if tem_bet365 and entradas_enviadas < 3:
             valores = buscar_valor_jogo_completo(odds)
@@ -1467,10 +1477,6 @@ def processar_jogos(limite_jogos=None):
             enviar_mensagem(msg)
             marcar_bingo_enviado()
             print(f"   🎰 BINGO ENVIADO (odd {odd_bingo:.2f})")
-        else:
-            print(f"   ⏭️ Bingo: odd {odd_bingo:.2f} < {ODD_BINGO_DIA}")
-    else:
-        print(f"   ⏭️ Bingo: poucos jogos")
 
     if not placar_ja:
         multipla = montar_placar_multipla(jogos, dados_por_jogo)
@@ -1483,8 +1489,6 @@ def processar_jogos(limite_jogos=None):
             enviar_mensagem(msg)
             marcar_placar_enviado()
             print(f"   🎯 Placar múltiplo ENVIADO (odd {odd_p:.2f})")
-        else:
-            print(f"   ⏭️ Placar: poucos jogos")
 
     salvar_req(REQ_COUNT)
     print(f"\n✅ Ciclo finalizado. Req: {REQ_COUNT}/{LIMITE_DIARIO}")
@@ -1514,4 +1518,3 @@ if __name__ == "__main__":
                 except Exception as e:
                     print(f"Erro no ciclo: {e}")
         time.sleep(60)
-
