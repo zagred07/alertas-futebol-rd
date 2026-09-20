@@ -50,10 +50,13 @@ ODD_ERRADA_MIN     = 1.20
 ODD_ERRADA_MIN_ODD = 1.50
 ODD_VALOR_MIN      = 1.10
 
+# Poisson
 POISSON_MAX_GOLS   = 7
-PLACAR_ODD_MIN     = 5.00
-PLACAR_ODD_MAX     = 20.00
-PLACAR_MEDIA_MIN   = 0.30
+PLACAR_ODD_MIN     = 6.00
+PLACAR_ODD_MAX     = 25.00
+PLACAR_MIN_GOLS    = 2
+PLACAR_NIVEIS      = True
+PLACAR_MARGEM      = 1
 
 AJUSTE_LAMBDA      = 0.5
 
@@ -65,7 +68,7 @@ FRAQUEZA_PCT_DERROTAS_FORA  = 0.70
 FRAQUEZA_POSICAO_Z4 = 4
 
 INTERVALO_MIN = 30
-INTERVALO_CACADOR = 15
+INTERVALO_CACADOR = 20
 BINGO_MIN_JOGOS = 3
 PLACAR_MIN_JOGOS = 3
 PLACAR_MAX_JOGOS = 4
@@ -261,6 +264,18 @@ def get_posicao_time(team_id, liga_id):
 def total_times_liga(liga_id):
     chave = f"{liga_id}"
     return len(STANDINGS_CACHE.get(chave, {})) or 20
+
+def classificar_nivel_time(team_id, liga_id):
+    """Retorna 'forte', 'medio' ou 'fraco'."""
+    pos = get_posicao_time(team_id, liga_id)
+    total = total_times_liga(liga_id)
+    if pos is None:
+        return "medio"
+    if pos <= 4:
+        return "forte"
+    elif pos > (total - 4):
+        return "fraco"
+    return "medio"
 
 # ─────────────────────────────────────────────
 # TELEGRAM
@@ -585,6 +600,34 @@ def escolher_linha_mais_assertiva(lista, linhas_possiveis, min_linha):
     return melhor, melhor_taxa, melhor_acertos
 
 # ─────────────────────────────────────────────
+# ANÁLISE POR NÍVEL
+# ─────────────────────────────────────────────
+
+def analisar_por_nivel(jogos, team_id, liga_id, casa=True):
+    resultado = {
+        "contra_forte": [],
+        "contra_medio": [],
+        "contra_fraco": [],
+    }
+    for j in jogos:
+        if casa:
+            adv_id = j["teams"]["away"]["id"]
+        else:
+            adv_id = j["teams"]["home"]["id"]
+        nivel_adv = classificar_nivel_time(adv_id, liga_id)
+        gf = get_gols(j, team_id)
+        resultado[f"contra_{nivel_adv}"].append(gf)
+
+    return {
+        "media_forte": statistics.mean(resultado["contra_forte"]) if resultado["contra_forte"] else 0,
+        "media_medio": statistics.mean(resultado["contra_medio"]) if resultado["contra_medio"] else 0,
+        "media_fraco": statistics.mean(resultado["contra_fraco"]) if resultado["contra_fraco"] else 0,
+        "n_forte": len(resultado["contra_forte"]),
+        "n_medio": len(resultado["contra_medio"]),
+        "n_fraco": len(resultado["contra_fraco"]),
+    }
+
+# ─────────────────────────────────────────────
 # ODDS
 # ─────────────────────────────────────────────
 
@@ -632,13 +675,39 @@ def media_ponderada(odds, bet_id, valor):
 
     if len(valores) < 2:
         return None
-
     return statistics.mean(valores)
+
+# ─────────────────────────────────────────────
+# VALIDAÇÃO BTTS
+# ─────────────────────────────────────────────
+
+def validar_btts(odds):
+    yes_365 = get_odd(odds, BET365_ID, ID_BTTS, "Yes")
+    no_365 = get_odd(odds, BET365_ID, ID_BTTS, "No")
+    yes_pin = get_odd(odds, PINNACLE_ID, ID_BTTS, "Yes")
+    no_pin = get_odd(odds, PINNACLE_ID, ID_BTTS, "No")
+
+    if not (yes_365 and no_365 and yes_pin and no_pin):
+        return True
+
+    sentido_365 = "yes" if yes_365 > no_365 else "no"
+    sentido_pin = "yes" if yes_pin > no_pin else "no"
+
+    if sentido_365 != sentido_pin:
+        print(f"   ⚠️ BTTS invertido! Bet365: Y={yes_365} N={no_365} | Pinnacle: Y={yes_pin} N={no_pin}")
+        return False
+
+    return True
 
 def detectar_odd_errada(odds, bet_id, valor, nome):
     o365 = get_odd(odds, BET365_ID, bet_id, valor)
     if not o365 or o365 < ODD_ERRADA_MIN_ODD:
         return None
+
+    if bet_id == ID_BTTS:
+        if not validar_btts(odds):
+            return None
+
     media = media_ponderada(odds, bet_id, valor)
     if not media:
         return None
@@ -673,7 +742,7 @@ ID_BOTH_CARDS    = 252
 ID_BOTH_2CARDS   = 300
 
 # ─────────────────────────────────────────────
-# POISSON
+# POISSON (COM ANÁLISE POR NÍVEL)
 # ─────────────────────────────────────────────
 
 def poisson_probabilidade(k, lamb):
@@ -697,9 +766,39 @@ def analisar_poder_fraqueza(mandante, visitante, pos_mand=None, pos_vis=None, to
 
     return poderoso, fraco
 
-def poisson_ajustado(mandante, visitante, poderoso, fraco):
-    lambda_casa = mandante.get("media_gols_feitos", 1.5)
-    lambda_fora = visitante.get("media_gols_feitos", 1.0)
+def calcular_gols_esperados_por_nivel(mandante, visitante, nivel_adv_mand, nivel_adv_vis, mandante_por_nivel, visitante_por_nivel):
+    if nivel_adv_mand == "forte":
+        gols_mand = mandante_por_nivel.get("media_forte", mandante.get("media_gols_feitos", 1.5))
+    elif nivel_adv_mand == "fraco":
+        gols_mand = mandante_por_nivel.get("media_fraco", mandante.get("media_gols_feitos", 1.5))
+    else:
+        gols_mand = mandante_por_nivel.get("media_medio", mandante.get("media_gols_feitos", 1.5))
+
+    if nivel_adv_vis == "forte":
+        gols_vis = visitante_por_nivel.get("media_forte", visitante.get("media_gols_feitos", 1.0))
+    elif nivel_adv_vis == "fraco":
+        gols_vis = visitante_por_nivel.get("media_fraco", visitante.get("media_gols_feitos", 1.0))
+    else:
+        gols_vis = visitante_por_nivel.get("media_medio", visitante.get("media_gols_feitos", 1.0))
+
+    if gols_mand == 0:
+        gols_mand = mandante.get("media_gols_feitos", 1.5)
+    if gols_vis == 0:
+        gols_vis = visitante.get("media_gols_feitos", 1.0)
+
+    return gols_mand, gols_vis
+
+def calcular_placares_poisson(lambda_casa, lambda_fora):
+    placares = {}
+    for g_casa in range(0, POISSON_MAX_GOLS + 1):
+        for g_fora in range(0, POISSON_MAX_GOLS + 1):
+            p_casa = poisson_probabilidade(g_casa, lambda_casa)
+            p_fora = poisson_probabilidade(g_fora, lambda_fora)
+            placares[f"{g_casa}:{g_fora}"] = p_casa * p_fora
+    return sorted(placares.items(), key=lambda x: x[1], reverse=True)
+    def poisson_ajustado(mandante, visitante, gols_esperados_mand, gols_esperados_vis, poderoso, fraco):
+    lambda_casa = gols_esperados_mand
+    lambda_fora = gols_esperados_vis
 
     media_sofre_fora = visitante.get("media_gols_sofridos", 0)
     if media_sofre_fora >= 2.5:
@@ -724,27 +823,59 @@ def poisson_ajustado(mandante, visitante, poderoso, fraco):
 
     return lambda_casa, lambda_fora
 
-def calcular_placares_poisson(lambda_casa, lambda_fora):
-    placares = {}
-    for g_casa in range(0, POISSON_MAX_GOLS + 1):
-        for g_fora in range(0, POISSON_MAX_GOLS + 1):
-            p_casa = poisson_probabilidade(g_casa, lambda_casa)
-            p_fora = poisson_probabilidade(g_fora, lambda_fora)
-            placares[f"{g_casa}:{g_fora}"] = p_casa * p_fora
-    return sorted(placares.items(), key=lambda x: x[1], reverse=True)
+def calcular_placares_possiveis(mandante, visitante):
+    """Filtra placares possíveis baseado no histórico dos times."""
+    placares_validos = []
 
-def escolher_placar_poisson(mandante, visitante, placar_odds, poderoso, fraco):
+    media_casa = mandante.get("media_gols_feitos", 1.5)
+    max_casa = mandante.get("max_gols", 3)
+    lista_gols_casa = mandante.get("lista_gols_feitos", [])
+    n_casa = len(lista_gols_casa) or 1
+
+    media_fora = visitante.get("media_gols_feitos", 1.0)
+    max_fora = visitante.get("max_gols", 3)
+    lista_gols_fora = visitante.get("lista_gols_feitos", [])
+    n_fora = len(lista_gols_fora) or 1
+
+    limite_casa = min(max_casa, int(media_casa) + 1)
+    limite_fora = min(max_fora, int(media_fora) + 1)
+
+    for g_casa in range(0, limite_casa + 1):
+        for g_fora in range(0, limite_fora + 1):
+            if g_casa + g_fora < PLACAR_MIN_GOLS:
+                continue
+
+            pct_casa = sum(1 for g in lista_gols_casa if g >= g_casa) / n_casa
+            pct_fora = sum(1 for g in lista_gols_fora if g >= g_fora) / n_fora
+
+            if pct_casa >= 0.30 and pct_fora >= 0.30:
+                placares_validos.append(f"{g_casa}:{g_fora}")
+
+    return placares_validos
+
+def escolher_placar_poisson(mandante, visitante, placar_odds, poderoso, fraco, nivel_adv_mand, nivel_adv_vis, mandante_por_nivel, visitante_por_nivel):
     if not mandante or not visitante or not placar_odds:
         return None, None, None, None, None
 
-    # DESCARTA se não tem dados (média = 0)
-    if mandante.get("media_gols_feitos", 0) < PLACAR_MEDIA_MIN:
+    if mandante.get("media_gols_feitos", 0) < 0.30:
         return None, None, None, None, None
-    if visitante.get("media_gols_feitos", 0) < PLACAR_MEDIA_MIN:
+    if visitante.get("media_gols_feitos", 0) < 0.30:
         return None, None, None, None, None
 
-    lambda_casa, lambda_fora = poisson_ajustado(mandante, visitante, poderoso, fraco)
+    gols_mand, gols_vis = calcular_gols_esperados_por_nivel(
+        mandante, visitante, nivel_adv_mand, nivel_adv_vis,
+        mandante_por_nivel, visitante_por_nivel
+    )
+
+    lambda_casa, lambda_fora = poisson_ajustado(
+        mandante, visitante, gols_mand, gols_vis, poderoso, fraco
+    )
+
+    placares_possiveis = calcular_placares_possiveis(mandante, visitante)
+
     placares_ordenados = calcular_placares_poisson(lambda_casa, lambda_fora)
+
+    placares_ordenados = [(p, prob) for p, prob in placares_ordenados if p in placares_possiveis]
 
     for placar, prob in placares_ordenados:
         if placar in placar_odds:
@@ -752,7 +883,8 @@ def escolher_placar_poisson(mandante, visitante, placar_odds, poderoso, fraco):
             if PLACAR_ODD_MIN <= odd <= PLACAR_ODD_MAX:
                 return placar, odd, prob, lambda_casa, lambda_fora
 
-    return None, None, None, None, None 
+    return None, None, None, None, None
+
 # ─────────────────────────────────────────────
 # ENTRADA PRINCIPAL — VISITANTE REATIVO
 # ─────────────────────────────────────────────
@@ -927,6 +1059,11 @@ def buscar_valor_jogo_completo(odds):
         o365 = get_odd(odds, BET365_ID, bet_id, valor)
         if not o365 or o365 < ODD_MIN_PERNA:
             continue
+
+        if bet_id == ID_BTTS:
+            if not validar_btts(odds):
+                continue
+
         media = media_ponderada(odds, bet_id, valor)
         if not media:
             continue
@@ -952,7 +1089,7 @@ def buscar_valor_jogo(odds):
     return buscar_valor_jogo_completo(odds)
 
 # ─────────────────────────────────────────────
-# PLACAR MÚLTIPLO — POISSON
+# PLACAR MÚLTIPLO
 # ─────────────────────────────────────────────
 
 def montar_placar_multipla(jogos, dados_por_jogo):
@@ -976,7 +1113,9 @@ def montar_placar_multipla(jogos, dados_por_jogo):
 
             placar, odd, prob, lambda_casa, lambda_fora = escolher_placar_poisson(
                 dados["mandante"], dados["visitante"], dados["placar_odds"],
-                dados.get("poderoso", False), dados.get("fraco", False)
+                dados.get("poderoso", False), dados.get("fraco", False),
+                dados.get("nivel_adv_mand", "medio"), dados.get("nivel_adv_vis", "medio"),
+                dados.get("mandante_por_nivel", {}), dados.get("visitante_por_nivel", {})
             )
             if placar and odd:
                 candidatos.append({
@@ -1372,12 +1511,22 @@ def processar_jogos(limite_jogos=None):
 
             poderoso, fraco = analisar_poder_fraqueza(mandante, visitante, pos_mand, pos_vis, tot_times)
 
+            nivel_mand = classificar_nivel_time(home_id, liga_id)
+            nivel_vis = classificar_nivel_time(away_id, liga_id)
+
+            mandante_por_nivel = analisar_por_nivel(jogos_casa, home_id, liga_id, casa=True)
+            visitante_por_nivel = analisar_por_nivel(jogos_fora, away_id, liga_id, casa=False)
+
             dados_por_jogo[fixture_id] = {
                 "mandante": mandante,
                 "visitante": visitante,
                 "placar_odds": placar_odds,
                 "poderoso": poderoso,
                 "fraco": fraco,
+                "nivel_adv_mand": nivel_vis,
+                "nivel_adv_vis": nivel_mand,
+                "mandante_por_nivel": mandante_por_nivel,
+                "visitante_por_nivel": visitante_por_nivel,
                 "pos_mand": pos_mand,
                 "pos_vis": pos_vis,
                 "total_times": tot_times
