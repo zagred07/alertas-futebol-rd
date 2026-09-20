@@ -1,4 +1,3 @@
-
 import requests
 import time
 import os
@@ -55,7 +54,10 @@ ODD_VALOR_MIN      = 1.15
 POISSON_MAX_GOLS   = 7
 PLACAR_ODD_MIN     = 6.00
 PLACAR_ODD_MAX     = 25.00
-PLACAR_MIN_GOLS    = 3
+
+# Classificação de estilo
+ESTILO_ABERTO      = 3.0
+ESTILO_FECHADO     = 2.4
 
 AJUSTE_LAMBDA      = 0.5
 
@@ -345,10 +347,7 @@ def bingo_ja_enviado_hoje():
 def marcar_bingo_enviado():
     _marcar_enviado_hoje(ARQUIVO_BINGO)
 
-# ── PLACAR POR HORÁRIO (novo) ──
-
 def carregar_placar_horarios():
-    """Retorna dict com horários já enviados hoje."""
     if os.path.exists(ARQUIVO_PLACAR_HORA):
         try:
             with open(ARQUIVO_PLACAR_HORA) as f:
@@ -768,6 +767,46 @@ def detectar_odd_errada_focado(odds):
     return melhores[0]
 
 # ─────────────────────────────────────────────
+# CLASSIFICAÇÃO DE ESTILO (NOVO)
+# ─────────────────────────────────────────────
+
+def classificar_estilo(media_feitos, media_sofridos):
+    """Classifica o time como aberto, equilibrado ou fechado."""
+    total = media_feitos + media_sofridos
+    if total >= ESTILO_ABERTO:
+        return "aberto"
+    elif total <= ESTILO_FECHADO:
+        return "fechado"
+    return "equilibrado"
+
+def calcular_placar_minimo(estilo_mand, estilo_vis):
+    """Retorna o mínimo de gols pro jogo, baseado nos estilos."""
+    # Aberto x Aberto → 3 gols
+    if estilo_mand == "aberto" and estilo_vis == "aberto":
+        return 3
+    # Aberto x Equilibrado → 3 gols
+    if estilo_mand == "aberto" and estilo_vis == "equilibrado":
+        return 3
+    if estilo_mand == "equilibrado" and estilo_vis == "aberto":
+        return 3
+    # Todos os outros casos → 2 gols (aceita 1:1, 2:0)
+    return 2
+
+def placar_permitido(placar, estilo_mand, estilo_vis):
+    """Verifica se o placar é permitido (não muito arriscado)."""
+    g_casa, g_fora = map(int, placar.split(":"))
+
+    # Nunca aceita 1:0 ou 0:1 (muito arriscado pra cashout)
+    if (g_casa == 1 and g_fora == 0) or (g_casa == 0 and g_fora == 1):
+        return False
+
+    # Nunca aceita 0:0
+    if g_casa == 0 and g_fora == 0:
+        return False
+
+    return True
+
+# ─────────────────────────────────────────────
 # POISSON
 # ─────────────────────────────────────────────
 
@@ -829,18 +868,23 @@ def poisson_ajustado(mandante, visitante, gols_esperados_mand, gols_esperados_vi
     lambda_fora = max(0.2, lambda_fora)
     return lambda_casa, lambda_fora
 
-def calcular_placares_possiveis(mandante, visitante):
+def calcular_placares_possiveis(mandante, visitante, estilo_mand, estilo_vis):
+    """Retorna placares possíveis + placar mais comum + placar mínimo."""
     placares_validos = []
     media_casa = mandante.get("media_gols_feitos", 1.5)
     max_casa = mandante.get("max_gols", 3)
     lista_gols_casa = mandante.get("lista_gols_feitos", [])
     n_casa = len(lista_gols_casa) or 1
+
     media_fora = visitante.get("media_gols_feitos", 1.0)
     max_fora = visitante.get("max_gols", 3)
     lista_gols_fora = visitante.get("lista_gols_feitos", [])
     n_fora = len(lista_gols_fora) or 1
+
     limite_casa = min(max_casa, int(media_casa) + 1)
     limite_fora = min(max_fora, int(media_fora) + 1)
+
+    placar_min = calcular_placar_minimo(estilo_mand, estilo_vis)
 
     placares_casa = {}
     for g in lista_gols_casa:
@@ -854,14 +898,17 @@ def calcular_placares_possiveis(mandante, visitante):
 
     for g_casa in range(0, limite_casa + 1):
         for g_fora in range(0, limite_fora + 1):
-            if g_casa + g_fora < PLACAR_MIN_GOLS:
+            if g_casa + g_fora < placar_min:
+                continue
+            placar_str = f"{g_casa}:{g_fora}"
+            if not placar_permitido(placar_str, estilo_mand, estilo_vis):
                 continue
             pct_casa = sum(1 for g in lista_gols_casa if g >= g_casa) / n_casa
             pct_fora = sum(1 for g in lista_gols_fora if g >= g_fora) / n_fora
             if pct_casa >= 0.30 and pct_fora >= 0.30:
-                placares_validos.append(f"{g_casa}:{g_fora}")
+                placares_validos.append(placar_str)
 
-    return placares_validos, placar_comum_casa, placar_comum_fora
+    return placares_validos, placar_comum_casa, placar_comum_fora, placar_min
 
 def calcular_placares_poisson(lambda_casa, lambda_fora):
     placares = {}
@@ -880,13 +927,17 @@ def escolher_placar_poisson(mandante, visitante, placar_odds, poderoso, fraco, n
     if visitante.get("media_gols_feitos", 0) < 0.30:
         return None, None, None, None, None, None
 
+    # Classifica estilos
+    estilo_mand = classificar_estilo(mandante.get("media_gols_feitos", 0), mandante.get("media_gols_sofridos", 0))
+    estilo_vis = classificar_estilo(visitante.get("media_gols_feitos", 0), visitante.get("media_gols_sofridos", 0))
+
     gols_mand, gols_vis = calcular_gols_esperados_por_nivel(
         mandante, visitante, nivel_adv_mand, nivel_adv_vis,
         mandante_por_nivel, visitante_por_nivel
     )
     lambda_casa, lambda_fora = poisson_ajustado(mandante, visitante, gols_mand, gols_vis, poderoso, fraco)
 
-    placares_possiveis, placar_comum_casa, placar_comum_fora = calcular_placares_possiveis(mandante, visitante)
+    placares_possiveis, placar_comum_casa, placar_comum_fora, placar_min = calcular_placares_possiveis(mandante, visitante, estilo_mand, estilo_vis)
 
     placares_ordenados = calcular_placares_poisson(lambda_casa, lambda_fora)
     placares_ordenados = [(p, prob) for p, prob in placares_ordenados if p in placares_possiveis]
@@ -897,9 +948,9 @@ def escolher_placar_poisson(mandante, visitante, placar_odds, poderoso, fraco, n
             if PLACAR_ODD_MIN <= odd <= PLACAR_ODD_MAX:
                 contexto = (
                     f"{mandante.get('nome','Mandante')} (casa): média {mandante['media_gols_feitos']:.2f} gols/jogo, "
-                    f"placar mais comum: {placar_comum_casa}:X. "
+                    f"estilo {estilo_mand}, placar comum {placar_comum_casa}:X. "
                     f"{visitante.get('nome','Visitante')} (fora): média {visitante['media_gols_feitos']:.2f} gols/jogo, "
-                    f"placar mais comum: X:{placar_comum_fora}."
+                    f"estilo {estilo_vis}, placar comum X:{placar_comum_fora}."
                 )
                 return placar, odd, prob, lambda_casa, lambda_fora, contexto
     return None, None, None, None, None, None
@@ -1084,17 +1135,14 @@ def buscar_valor_jogo(odds):
 # ─────────────────────────────────────────────
 
 def montar_placar_multipla(jogos, dados_por_jogo, horarios_ja_enviados):
-    """Agrupa jogos por horário. Só retorna horários que ainda não foram enviados."""
     por_horario = defaultdict(list)
     for jogo in jogos:
         horario_brasilia = converter_horario_brasilia(jogo["fixture"]["date"])
         por_horario[horario_brasilia].append(jogo)
 
     for horario, lista in sorted(por_horario.items()):
-        # Se já mandou esse horário → pula
         if horario in horarios_ja_enviados:
             continue
-
         if len(lista) < PLACAR_MIN_JOGOS:
             continue
 
@@ -1367,6 +1415,10 @@ def processar_jogos(limite_jogos=None):
         mandante["nome"] = home_nome
         visitante["nome"] = away_nome
 
+        # Classifica estilos
+        estilo_mand = classificar_estilo(mandante.get("media_gols_feitos", 0), mandante.get("media_gols_sofridos", 0))
+        estilo_vis = classificar_estilo(visitante.get("media_gols_feitos", 0), visitante.get("media_gols_sofridos", 0))
+
         odds_data = get_odds_fixture(fixture_id)
         odds = extrair_odds(odds_data)
         tem_bet365 = BET365_ID in odds
@@ -1378,10 +1430,10 @@ def processar_jogos(limite_jogos=None):
         if not tem_bet365:
             print(f"   ⚠️ Sem Bet365 — usando Pinnacle")
 
-        print(f"   📊 Mandante: {mandante['n_jogos']}j | abre {int(mandante.get('pct_abriu_placar',0)*100)}%")
-        print(f"   📊 Visitante: {visitante['n_jogos']}j | perdendo={visitante['media_fin_perdendo']:.1f} x geral={visitante['media_fin']:.1f}")
+        print(f"   📊 Mandante: {mandante['n_jogos']}j | {estilo_mand}")
+        print(f"   📊 Visitante: {visitante['n_jogos']}j | {estilo_vis}")
 
-        # Sempre coleta dados pro placar (não depende de horários já enviados)
+        # Sempre coleta dados pro placar
         if tem_bet365:
             placar_odds = {}
             if 10 in odds[BET365_ID]:
@@ -1401,7 +1453,8 @@ def processar_jogos(limite_jogos=None):
                 "poderoso": poderoso, "fraco": fraco,
                 "nivel_adv_mand": nivel_vis, "nivel_adv_vis": nivel_mand,
                 "mandante_por_nivel": mandante_por_nivel, "visitante_por_nivel": visitante_por_nivel,
-                "pos_mand": pos_mand, "pos_vis": pos_vis, "total_times": tot_times
+                "pos_mand": pos_mand, "pos_vis": pos_vis, "total_times": tot_times,
+                "estilo_mand": estilo_mand, "estilo_vis": estilo_vis
             }
 
         ja_enviado = str(fixture_id) in enviados
@@ -1460,7 +1513,7 @@ def processar_jogos(limite_jogos=None):
             else:
                 print(f"   ⏭️ Principal: só {len(pernas)} perna(s)")
 
-        # ENTRADA NORMAL (máx 3 por ciclo)
+        # ENTRADA NORMAL
         valores = []
         if tem_bet365 and entradas_enviadas < 3:
             valores = buscar_valor_jogo_completo(odds)
@@ -1484,7 +1537,7 @@ def processar_jogos(limite_jogos=None):
 
         time.sleep(1)
 
-    # BINGO (só com odds reais)
+    # BINGO
     print(f"\n📊 Bingo: {len(bingo_entradas)} jogo(s)")
     if not bingo_ja and len(bingo_entradas) >= BINGO_MIN_JOGOS:
         odd_bingo = 1.0
@@ -1500,7 +1553,7 @@ def processar_jogos(limite_jogos=None):
             marcar_bingo_enviado()
             print(f"   🎰 BINGO ENVIADO (odd {odd_bingo:.2f})")
 
-    # PLACAR MÚLTIPLO (1x por horário)
+    # PLACAR MÚLTIPLO
     print(f"\n🎯 Placar: horários já enviados hoje: {horarios_placar_ja}")
     multipla = montar_placar_multipla(jogos, dados_por_jogo, horarios_placar_ja)
     if multipla and len(multipla) >= PLACAR_MIN_JOGOS:
