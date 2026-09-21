@@ -1213,10 +1213,13 @@ def msg_principal(liga, home, away, mandante, visitante, pernas, odd_final=None,
         "━━━━━━━━━━━━━━━━━━━", "", "📋 <b>APOSTAS SUGERIDAS</b>"
     ]
     for p in pernas:
-        linha = f"✅ {p['nome']} ({int(p['taxa']*100)}%)"
-        if p.get("odd"):
-            linha += f" — @ {fmt(p['odd'])}"
-        linhas.append(linha)
+    if p.get("total"):
+        linha = f"✅{p['nome']}: {int(p['taxa']*100)}% ({p['acertos']}/{p['total']})"
+    else:
+        linha = f"✅{p['nome']}: {int(p['taxa']*100)}%"
+    if p.get("odd"):
+        linha += f" — @ {fmt(p['odd'])}"
+    linhas.append(linha)
 
     linhas += ["", "━━━━━━━━━━━━━━━━━━━", ""]
 
