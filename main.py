@@ -55,7 +55,6 @@ POISSON_MAX_GOLS   = 7
 PLACAR_ODD_MIN     = 6.00
 PLACAR_ODD_MAX     = 25.00
 
-# Classificação de estilo
 ESTILO_ABERTO      = 3.0
 ESTILO_FECHADO     = 2.4
 
@@ -76,10 +75,6 @@ PLACAR_MAX_JOGOS = 4
 ESPERA_ENTRE_MSGS = 30
 ESPERA_ENTRE_JOGOS = 30
 
-# ─────────────────────────────────────────────
-# MERCADOS E LIMITES
-# ─────────────────────────────────────────────
-
 MERCADOS_ODD_ERRADA = {
     6:   {"nome": "Gols 1ºT",            "limites": ["Over 0.5", "Over 1.5"]},
     8:   {"nome": "Ambas Marcam",        "limites": ["Yes", "No"]},
@@ -91,10 +86,6 @@ MERCADOS_ODD_ERRADA = {
     155: {"nome": "Amarelos 1ºT",        "limites": ["Over 0.5", "Over 1.5"]},
     211: {"nome": "Finalizações Totais", "limites": ["Over 20.5", "Over 25.5"]},
 }
-
-# ─────────────────────────────────────────────
-# ANTI-DUPLICAÇÃO
-# ─────────────────────────────────────────────
 
 def ler_ultimas_mensagens(limit=50):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
@@ -113,10 +104,6 @@ def ler_ultimas_mensagens(limit=50):
     except Exception as e:
         print(f"Erro lendo Telegram: {e}")
         return []
-
-# ─────────────────────────────────────────────
-# CONTROLE DE REQUISIÇÕES
-# ─────────────────────────────────────────────
 
 def _hoje_str():
     return datetime.now(pytz.timezone("America/Sao_Paulo")).strftime("%Y-%m-%d")
@@ -162,10 +149,6 @@ def api_get(endpoint, params=None):
         print(f"Erro API {endpoint}: {e}")
         return None
 
-# ─────────────────────────────────────────────
-# CACHE
-# ─────────────────────────────────────────────
-
 def carregar_cache():
     if os.path.exists(ARQUIVO_CACHE):
         try:
@@ -195,10 +178,6 @@ def get_stats_fixture(fixture_id):
 def get_odds_fixture(fixture_id):
     resp = api_get("odds", {"fixture": fixture_id})
     return resp if resp else []
-
-# ─────────────────────────────────────────────
-# CACHE EVENTOS
-# ─────────────────────────────────────────────
 
 def carregar_events_cache():
     if os.path.exists(ARQUIVO_EVENTS):
@@ -238,10 +217,6 @@ def quem_fez_primeiro_gol(fixture_id, home_id, away_id):
             elif team_id == away_id:
                 return "away"
     return None
-
-# ─────────────────────────────────────────────
-# STANDINGS
-# ─────────────────────────────────────────────
 
 def carregar_standings_cache():
     if os.path.exists(ARQUIVO_STANDINGS):
@@ -293,10 +268,6 @@ def classificar_nivel_time(team_id, liga_id):
         return "fraco"
     return "medio"
 
-# ─────────────────────────────────────────────
-# TELEGRAM
-# ─────────────────────────────────────────────
-
 def enviar_mensagem(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
@@ -309,10 +280,6 @@ def enviar_mensagem(msg):
         requests.post(url, data=payload, timeout=15)
     except Exception as e:
         print(f"Erro Telegram: {e}")
-
-# ─────────────────────────────────────────────
-# ARQUIVOS DE CONTROLE
-# ─────────────────────────────────────────────
 
 def carregar_enviados():
     if os.path.exists(ARQUIVO_ENVIADOS):
@@ -393,7 +360,6 @@ def salvar_cacador(ids):
         json.dump({"data": _hoje_str(), "ids": list(ids)}, f)
 
 CACADOR_ENVIADOS = carregar_cacador()
-
 # ─────────────────────────────────────────────
 # DATA
 # ─────────────────────────────────────────────
@@ -767,11 +733,10 @@ def detectar_odd_errada_focado(odds):
     return melhores[0]
 
 # ─────────────────────────────────────────────
-# CLASSIFICAÇÃO DE ESTILO (NOVO)
+# CLASSIFICAÇÃO DE ESTILO
 # ─────────────────────────────────────────────
 
 def classificar_estilo(media_feitos, media_sofridos):
-    """Classifica o time como aberto, equilibrado ou fechado."""
     total = media_feitos + media_sofridos
     if total >= ESTILO_ABERTO:
         return "aberto"
@@ -780,33 +745,22 @@ def classificar_estilo(media_feitos, media_sofridos):
     return "equilibrado"
 
 def calcular_placar_minimo(estilo_mand, estilo_vis):
-    """Retorna o mínimo de gols pro jogo, baseado nos estilos."""
-    # Aberto x Aberto → 3 gols
     if estilo_mand == "aberto" and estilo_vis == "aberto":
         return 3
-    # Aberto x Equilibrado → 3 gols
     if estilo_mand == "aberto" and estilo_vis == "equilibrado":
         return 3
     if estilo_mand == "equilibrado" and estilo_vis == "aberto":
         return 3
-    # Todos os outros casos → 2 gols (aceita 1:1, 2:0)
     return 2
 
 def placar_permitido(placar, estilo_mand, estilo_vis):
-    """Verifica se o placar é permitido (não muito arriscado)."""
     g_casa, g_fora = map(int, placar.split(":"))
-
-    # Nunca aceita 1:0 ou 0:1 (muito arriscado pra cashout)
     if (g_casa == 1 and g_fora == 0) or (g_casa == 0 and g_fora == 1):
         return False
-
-    # Nunca aceita 0:0
     if g_casa == 0 and g_fora == 0:
         return False
-
     return True
-
-# ─────────────────────────────────────────────
+    # ─────────────────────────────────────────────
 # POISSON
 # ─────────────────────────────────────────────
 
@@ -869,7 +823,6 @@ def poisson_ajustado(mandante, visitante, gols_esperados_mand, gols_esperados_vi
     return lambda_casa, lambda_fora
 
 def calcular_placares_possiveis(mandante, visitante, estilo_mand, estilo_vis):
-    """Retorna placares possíveis + placar mais comum + placar mínimo."""
     placares_validos = []
     media_casa = mandante.get("media_gols_feitos", 1.5)
     max_casa = mandante.get("max_gols", 3)
@@ -927,7 +880,6 @@ def escolher_placar_poisson(mandante, visitante, placar_odds, poderoso, fraco, n
     if visitante.get("media_gols_feitos", 0) < 0.30:
         return None, None, None, None, None, None
 
-    # Classifica estilos
     estilo_mand = classificar_estilo(mandante.get("media_gols_feitos", 0), mandante.get("media_gols_sofridos", 0))
     estilo_vis = classificar_estilo(visitante.get("media_gols_feitos", 0), visitante.get("media_gols_sofridos", 0))
 
@@ -954,7 +906,8 @@ def escolher_placar_poisson(mandante, visitante, placar_odds, poderoso, fraco, n
                 )
                 return placar, odd, prob, lambda_casa, lambda_fora, contexto
     return None, None, None, None, None, None
-    # ─────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
 # ENTRADA PRINCIPAL — VISITANTE REATIVO
 # ─────────────────────────────────────────────
 
@@ -1184,8 +1137,7 @@ def montar_placar_multipla(jogos, dados_por_jogo, horarios_ja_enviados):
             candidatos.sort(key=lambda x: x["odd"])
             return candidatos[:PLACAR_MAX_JOGOS]
     return None
-
-# ─────────────────────────────────────────────
+    # ─────────────────────────────────────────────
 # FORMATADORES
 # ─────────────────────────────────────────────
 
@@ -1213,13 +1165,10 @@ def msg_principal(liga, home, away, mandante, visitante, pernas, odd_final=None,
         "━━━━━━━━━━━━━━━━━━━", "", "📋 <b>APOSTAS SUGERIDAS</b>"
     ]
     for p in pernas:
-    if p.get("total"):
-        linha = f"✅{p['nome']}: {int(p['taxa']*100)}% ({p['acertos']}/{p['total']})"
-    else:
-        linha = f"✅{p['nome']}: {int(p['taxa']*100)}%"
-    if p.get("odd"):
-        linha += f" — @ {fmt(p['odd'])}"
-    linhas.append(linha)
+        linha = f"✅ {p['nome']}: {int(p['taxa']*100)}% ({p['acertos']}/{p['total']})"
+        if p.get("odd"):
+            linha += f" — @ {fmt(p['odd'])}"
+        linhas.append(linha)
 
     linhas += ["", "━━━━━━━━━━━━━━━━━━━", ""]
 
@@ -1418,7 +1367,6 @@ def processar_jogos(limite_jogos=None):
         mandante["nome"] = home_nome
         visitante["nome"] = away_nome
 
-        # Classifica estilos
         estilo_mand = classificar_estilo(mandante.get("media_gols_feitos", 0), mandante.get("media_gols_sofridos", 0))
         estilo_vis = classificar_estilo(visitante.get("media_gols_feitos", 0), visitante.get("media_gols_sofridos", 0))
 
@@ -1436,7 +1384,6 @@ def processar_jogos(limite_jogos=None):
         print(f"   📊 Mandante: {mandante['n_jogos']}j | {estilo_mand}")
         print(f"   📊 Visitante: {visitante['n_jogos']}j | {estilo_vis}")
 
-        # Sempre coleta dados pro placar
         if tem_bet365:
             placar_odds = {}
             if 10 in odds[BET365_ID]:
@@ -1465,7 +1412,6 @@ def processar_jogos(limite_jogos=None):
             print(f"   ⏭️ Já enviado")
             continue
 
-        # ODD ERRADA
         if tem_bet365 and odd_errada_enviadas < 3:
             alerta = detectar_odd_errada_focado(odds)
             if alerta:
@@ -1478,7 +1424,6 @@ def processar_jogos(limite_jogos=None):
                     odd_errada_enviadas += 1
                     time.sleep(ESPERA_ENTRE_MSGS)
 
-        # ENTRADA PRINCIPAL
         liga_eh_brasileira = liga_id in LIGAS_VISITANTE_REATIVO
         if not liga_eh_brasileira:
             print(f"   ⏭️ Principal: liga não brasileira")
@@ -1516,7 +1461,6 @@ def processar_jogos(limite_jogos=None):
             else:
                 print(f"   ⏭️ Principal: só {len(pernas)} perna(s)")
 
-        # ENTRADA NORMAL
         valores = []
         if tem_bet365 and entradas_enviadas < 3:
             valores = buscar_valor_jogo_completo(odds)
@@ -1540,7 +1484,6 @@ def processar_jogos(limite_jogos=None):
 
         time.sleep(1)
 
-    # BINGO
     print(f"\n📊 Bingo: {len(bingo_entradas)} jogo(s)")
     if not bingo_ja and len(bingo_entradas) >= BINGO_MIN_JOGOS:
         odd_bingo = 1.0
@@ -1556,7 +1499,6 @@ def processar_jogos(limite_jogos=None):
             marcar_bingo_enviado()
             print(f"   🎰 BINGO ENVIADO (odd {odd_bingo:.2f})")
 
-    # PLACAR MÚLTIPLO
     print(f"\n🎯 Placar: horários já enviados hoje: {horarios_placar_ja}")
     multipla = montar_placar_multipla(jogos, dados_por_jogo, horarios_placar_ja)
     if multipla and len(multipla) >= PLACAR_MIN_JOGOS:
@@ -1601,4 +1543,4 @@ if __name__ == "__main__":
                     ultimo_principal = ts
                 except Exception as e:
                     print(f"Erro no ciclo: {e}")
-        time.sleep(60)
+        time.sleep(60) 
