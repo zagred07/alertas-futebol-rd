@@ -8,7 +8,7 @@
 
 RD STATS é um bot de análise de futebol que roda 24/7 em produção. Ele coleta dados históricos de cada time, processa estatísticas, detecta padrões e envia alertas automáticos no Telegram quando uma oportunidade é identificada — sem intervenção manual.
 
-Criado por **RODRIGX** como parte do ecossistema **PREDZR**.
+Criado por **@RD_UNK** como parte do ecossistema **PREDZR**.
 
 ---
 
@@ -115,4 +115,4 @@ O sistema controla o consumo da API automaticamente:
 
 ---
 
-> Built by RODRIGX · RD STATS · PREDZR ecosystem
+> Built by RODRIGX @RD_UNK· RD STATS · PREDZR ecosystem
