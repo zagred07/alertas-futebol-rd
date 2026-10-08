@@ -733,10 +733,21 @@ def detectar_odd_errada_focado(odds):
     return melhores[0]
 
 # ─────────────────────────────────────────────
-# CLASSIFICAÇÃO DE ESTILO
+# CLASSIFICAÇÃO DE ESTILO (NOVO)
 # ─────────────────────────────────────────────
 
+# Novos parâmetros do placar (ajuste aqui se quiser)
+PLACAR_PROB_MIN     = 0.045   # placar precisa ter pelo menos 4,5% de prob. no modelo
+DIFF_FAVORITO       = 0.70    # se |λ_casa - λ_fora| >= isso, há favorito claro → empate (1:1, 2:2) é barrado
+PESO_DEFESA_ADV     = 0.40    # quanto o λ puxa pra "gols que a defesa adversária sofre" (0 = ignora defesa)
+PESO_EMPIRICO       = 0.25    # peso da frequência real de gols dos times misturada ao Poisson
+SHRINK_NIVEL        = 3       # "jogos fantasmas" pra suavizar média contra forte/médio/fraco com poucos jogos
+PLACAR_FRACAO_LIDER = 0.75    # só disputa por valor quem tem >= 75% da prob. do placar mais provável
+PCT_MIN_GOLS        = 0.25    # time precisa ter feito >= g gols em pelo menos 25% dos jogos pra g entrar
+
+
 def classificar_estilo(media_feitos, media_sofridos):
+    """Classifica o time como aberto, equilibrado ou fechado."""
     total = media_feitos + media_sofridos
     if total >= ESTILO_ABERTO:
         return "aberto"
@@ -745,28 +756,42 @@ def classificar_estilo(media_feitos, media_sofridos):
     return "equilibrado"
 
 def calcular_placar_minimo(estilo_mand, estilo_vis):
+    """Retorna o mínimo de gols pro jogo, baseado nos estilos."""
+    # Aberto x Aberto → 3 gols
     if estilo_mand == "aberto" and estilo_vis == "aberto":
         return 3
+    # Aberto x Equilibrado → 3 gols
     if estilo_mand == "aberto" and estilo_vis == "equilibrado":
         return 3
     if estilo_mand == "equilibrado" and estilo_vis == "aberto":
         return 3
+    # Todos os outros casos → 2 gols (aceita 1:1, 2:0)
     return 2
 
-def placar_permitido(placar, estilo_mand, estilo_vis):
+def placar_permitido(placar, estilo_mand, estilo_vis, permitir_empate=True):
+    """Verifica se o placar é permitido (não muito arriscado)."""
     g_casa, g_fora = map(int, placar.split(":"))
+
+    # Nunca aceita 1:0 ou 0:1 (muito arriscado pra cashout)
     if (g_casa == 1 and g_fora == 0) or (g_casa == 0 and g_fora == 1):
         return False
+
+    # Nunca aceita 0:0
     if g_casa == 0 and g_fora == 0:
         return False
+
+    # Com favorito claro no modelo, empate contradiz a própria análise
+    if not permitir_empate and g_casa == g_fora:
+        return False
+
     return True
-    # ─────────────────────────────────────────────
+# ─────────────────────────────────────────────
 # POISSON
 # ─────────────────────────────────────────────
 
 def poisson_probabilidade(k, lamb):
     if lamb <= 0:
-        return 0
+        return 1.0 if k == 0 else 0.0   # (antes retornava 0 até pra k=0)
     return (lamb ** k) * math.exp(-lamb) / math.factorial(k)
 
 def analisar_poder_fraqueza(mandante, visitante, pos_mand=None, pos_vis=None, total_times=20):
@@ -782,62 +807,66 @@ def analisar_poder_fraqueza(mandante, visitante, pos_mand=None, pos_vis=None, to
     fraco = (media_sofre_fora >= FRAQUEZA_MEDIA_SOFRIDA_FORA) or (pct_der >= FRAQUEZA_PCT_DERROTAS_FORA) or no_z4
     return poderoso, fraco
 
+def _media_nivel(por_nivel, nivel, media_geral):
+    """Média de gols contra o nível do adversário, suavizada pela média geral
+    (evita λ maluco quando o time só jogou 1-2 vezes contra aquele nível)."""
+    if not por_nivel:
+        return media_geral
+    n = por_nivel.get(f"n_{nivel}", 0)
+    m = por_nivel.get(f"media_{nivel}", 0)
+    if not n:
+        return media_geral
+    return (m * n + media_geral * SHRINK_NIVEL) / (n + SHRINK_NIVEL)
+
 def calcular_gols_esperados_por_nivel(mandante, visitante, nivel_adv_mand, nivel_adv_vis, mandante_por_nivel, visitante_por_nivel):
-    if nivel_adv_mand == "forte":
-        gols_mand = mandante_por_nivel.get("media_forte", 0) or mandante.get("media_gols_feitos", 1.5)
-    elif nivel_adv_mand == "fraco":
-        gols_mand = mandante_por_nivel.get("media_fraco", 0) or mandante.get("media_gols_feitos", 1.5)
-    else:
-        gols_mand = mandante_por_nivel.get("media_medio", 0) or mandante.get("media_gols_feitos", 1.5)
-    if nivel_adv_vis == "forte":
-        gols_vis = visitante_por_nivel.get("media_forte", 0) or visitante.get("media_gols_feitos", 1.0)
-    elif nivel_adv_vis == "fraco":
-        gols_vis = visitante_por_nivel.get("media_fraco", 0) or visitante.get("media_gols_feitos", 1.0)
-    else:
-        gols_vis = visitante_por_nivel.get("media_medio", 0) or visitante.get("media_gols_feitos", 1.0)
-    if gols_mand == 0:
-        gols_mand = mandante.get("media_gols_feitos", 1.5)
-    if gols_vis == 0:
-        gols_vis = visitante.get("media_gols_feitos", 1.0)
+    geral_mand = mandante.get("media_gols_feitos", 1.5) or 1.5
+    geral_vis = visitante.get("media_gols_feitos", 1.0) or 1.0
+    nivel_m = nivel_adv_mand if nivel_adv_mand in ("forte", "fraco") else "medio"
+    nivel_v = nivel_adv_vis if nivel_adv_vis in ("forte", "fraco") else "medio"
+    gols_mand = _media_nivel(mandante_por_nivel, nivel_m, geral_mand)
+    gols_vis = _media_nivel(visitante_por_nivel, nivel_v, geral_vis)
+    if gols_mand <= 0:
+        gols_mand = geral_mand
+    if gols_vis <= 0:
+        gols_vis = geral_vis
     return gols_mand, gols_vis
 
 def poisson_ajustado(mandante, visitante, gols_esperados_mand, gols_esperados_vis, poderoso, fraco):
-    lambda_casa = gols_esperados_mand
-    lambda_fora = gols_esperados_vis
-    media_sofre_fora = visitante.get("media_gols_sofridos", 0)
-    if media_sofre_fora >= 2.5:
-        lambda_casa += AJUSTE_LAMBDA
-    elif media_sofre_fora >= 2.0:
-        lambda_casa += AJUSTE_LAMBDA * 0.6
+    """λ = mistura do ataque do time com a defesa do adversário
+    (antes o λ ignorava a defesa de quem estava do outro lado)."""
+    ataque_casa = gols_esperados_mand
+    ataque_fora = gols_esperados_vis
+    sofre_fora = visitante.get("media_gols_sofridos", ataque_casa)
+    sofre_casa = mandante.get("media_gols_sofridos", ataque_fora)
+
+    lambda_casa = (1 - PESO_DEFESA_ADV) * ataque_casa + PESO_DEFESA_ADV * sofre_fora
+    lambda_fora = (1 - PESO_DEFESA_ADV) * ataque_fora + PESO_DEFESA_ADV * sofre_casa
+
+    # Ajustes de contexto (menores, porque a defesa já entrou na mistura acima)
     if poderoso:
-        lambda_casa += AJUSTE_LAMBDA * 0.6
-    media_sofre_casa = mandante.get("media_gols_sofridos", 0)
-    if media_sofre_casa <= 0.5:
-        lambda_fora -= AJUSTE_LAMBDA * 0.4
-    elif media_sofre_casa >= 2.0:
-        lambda_fora += AJUSTE_LAMBDA * 0.6
+        lambda_casa += AJUSTE_LAMBDA * 0.4
     if fraco:
-        lambda_fora -= AJUSTE_LAMBDA * 0.4
+        lambda_casa += AJUSTE_LAMBDA * 0.2
+        lambda_fora -= AJUSTE_LAMBDA * 0.3
+
     lambda_casa = max(0.5, lambda_casa)
     lambda_fora = max(0.2, lambda_fora)
     return lambda_casa, lambda_fora
 
-def calcular_placares_possiveis(mandante, visitante, estilo_mand, estilo_vis):
-    placares_validos = []
-    media_casa = mandante.get("media_gols_feitos", 1.5)
-    max_casa = mandante.get("max_gols", 3)
+def calcular_placares_possiveis(mandante, visitante, estilo_mand, estilo_vis, lambda_casa=None, lambda_fora=None):
+    """Retorna placares possíveis + placar mais comum + placar mínimo."""
     lista_gols_casa = mandante.get("lista_gols_feitos", [])
     n_casa = len(lista_gols_casa) or 1
-
-    media_fora = visitante.get("media_gols_feitos", 1.0)
-    max_fora = visitante.get("max_gols", 3)
     lista_gols_fora = visitante.get("lista_gols_feitos", [])
     n_fora = len(lista_gols_fora) or 1
 
-    limite_casa = min(max_casa, int(media_casa) + 1)
-    limite_fora = min(max_fora, int(media_fora) + 1)
-
     placar_min = calcular_placar_minimo(estilo_mand, estilo_vis)
+
+    # Favorito claro (pelo λ) → não aceita empate
+    permitir_empate = True
+    if lambda_casa is not None and lambda_fora is not None:
+        if abs(lambda_casa - lambda_fora) >= DIFF_FAVORITO:
+            permitir_empate = False
 
     placares_casa = {}
     for g in lista_gols_casa:
@@ -849,27 +878,45 @@ def calcular_placares_possiveis(mandante, visitante, estilo_mand, estilo_vis):
         placares_fora[g] = placares_fora.get(g, 0) + 1
     placar_comum_fora = max(placares_fora, key=placares_fora.get) if placares_fora else 1
 
-    for g_casa in range(0, limite_casa + 1):
-        for g_fora in range(0, limite_fora + 1):
+    # Teto de gols vem do histórico real (antes era int(média)+1, que barrava
+    # 3:x até pra time que faz 3+ gols em 30% dos jogos)
+    teto_casa = min(POISSON_MAX_GOLS, max(mandante.get("max_gols", 3), 2))
+    teto_fora = min(POISSON_MAX_GOLS, max(visitante.get("max_gols", 3), 2))
+
+    placares_validos = []
+    for g_casa in range(0, teto_casa + 1):
+        for g_fora in range(0, teto_fora + 1):
             if g_casa + g_fora < placar_min:
                 continue
             placar_str = f"{g_casa}:{g_fora}"
-            if not placar_permitido(placar_str, estilo_mand, estilo_vis):
+            if not placar_permitido(placar_str, estilo_mand, estilo_vis, permitir_empate):
                 continue
             pct_casa = sum(1 for g in lista_gols_casa if g >= g_casa) / n_casa
             pct_fora = sum(1 for g in lista_gols_fora if g >= g_fora) / n_fora
-            if pct_casa >= 0.30 and pct_fora >= 0.30:
+            if pct_casa >= PCT_MIN_GOLS and pct_fora >= PCT_MIN_GOLS:
                 placares_validos.append(placar_str)
 
     return placares_validos, placar_comum_casa, placar_comum_fora, placar_min
 
-def calcular_placares_poisson(lambda_casa, lambda_fora):
+def calcular_placares_poisson(lambda_casa, lambda_fora, mandante=None, visitante=None):
+    """Probabilidade de cada placar = Poisson misturado com a frequência real
+    de gols dos dois times (quando há jogos suficientes)."""
+    lista_c = (mandante or {}).get("lista_gols_feitos", [])
+    lista_f = (visitante or {}).get("lista_gols_feitos", [])
+    usar_emp = len(lista_c) >= 6 and len(lista_f) >= 6
+    w = PESO_EMPIRICO if usar_emp else 0.0
+
     placares = {}
     for g_casa in range(0, POISSON_MAX_GOLS + 1):
         for g_fora in range(0, POISSON_MAX_GOLS + 1):
-            p_casa = poisson_probabilidade(g_casa, lambda_casa)
-            p_fora = poisson_probabilidade(g_fora, lambda_fora)
-            placares[f"{g_casa}:{g_fora}"] = p_casa * p_fora
+            p_pois = poisson_probabilidade(g_casa, lambda_casa) * poisson_probabilidade(g_fora, lambda_fora)
+            if usar_emp:
+                f_c = lista_c.count(g_casa) / len(lista_c)
+                f_f = lista_f.count(g_fora) / len(lista_f)
+                p = (1 - w) * p_pois + w * (f_c * f_f)
+            else:
+                p = p_pois
+            placares[f"{g_casa}:{g_fora}"] = p
     return sorted(placares.items(), key=lambda x: x[1], reverse=True)
 
 def escolher_placar_poisson(mandante, visitante, placar_odds, poderoso, fraco, nivel_adv_mand, nivel_adv_vis, mandante_por_nivel, visitante_por_nivel):
@@ -880,6 +927,7 @@ def escolher_placar_poisson(mandante, visitante, placar_odds, poderoso, fraco, n
     if visitante.get("media_gols_feitos", 0) < 0.30:
         return None, None, None, None, None, None
 
+    # Classifica estilos
     estilo_mand = classificar_estilo(mandante.get("media_gols_feitos", 0), mandante.get("media_gols_sofridos", 0))
     estilo_vis = classificar_estilo(visitante.get("media_gols_feitos", 0), visitante.get("media_gols_sofridos", 0))
 
@@ -889,23 +937,44 @@ def escolher_placar_poisson(mandante, visitante, placar_odds, poderoso, fraco, n
     )
     lambda_casa, lambda_fora = poisson_ajustado(mandante, visitante, gols_mand, gols_vis, poderoso, fraco)
 
-    placares_possiveis, placar_comum_casa, placar_comum_fora, placar_min = calcular_placares_possiveis(mandante, visitante, estilo_mand, estilo_vis)
+    placares_possiveis, placar_comum_casa, placar_comum_fora, placar_min = calcular_placares_possiveis(
+        mandante, visitante, estilo_mand, estilo_vis, lambda_casa, lambda_fora
+    )
 
-    placares_ordenados = calcular_placares_poisson(lambda_casa, lambda_fora)
-    placares_ordenados = [(p, prob) for p, prob in placares_ordenados if p in placares_possiveis]
+    placares_ordenados = calcular_placares_poisson(lambda_casa, lambda_fora, mandante, visitante)
 
+    # Escolhe entre os placares MAIS PROVÁVEIS (>= 75% da prob. do líder) o de maior
+    # VALOR (prob × odd). Antes: o 1º da lista por probabilidade ganhava sempre → como
+    # 1:0, 0:1 e 0:0 são barrados, o 1:1 era o mais provável em quase todo jogo.
+    candidatos = []
     for placar, prob in placares_ordenados:
-        if placar in placar_odds:
-            odd = placar_odds[placar]
-            if PLACAR_ODD_MIN <= odd <= PLACAR_ODD_MAX:
-                contexto = (
-                    f"{mandante.get('nome','Mandante')} (casa): média {mandante['media_gols_feitos']:.2f} gols/jogo, "
-                    f"estilo {estilo_mand}, placar comum {placar_comum_casa}:X. "
-                    f"{visitante.get('nome','Visitante')} (fora): média {visitante['media_gols_feitos']:.2f} gols/jogo, "
-                    f"estilo {estilo_vis}, placar comum X:{placar_comum_fora}."
-                )
-                return placar, odd, prob, lambda_casa, lambda_fora, contexto
-    return None, None, None, None, None, None
+        if placar not in placares_possiveis or placar not in placar_odds:
+            continue
+        if prob < PLACAR_PROB_MIN:
+            continue
+        odd = placar_odds[placar]
+        if not (PLACAR_ODD_MIN <= odd <= PLACAR_ODD_MAX):
+            continue
+        candidatos.append((placar, odd, prob, prob * odd))
+
+    melhor = None
+    if candidatos:
+        prob_lider = max(c[2] for c in candidatos)
+        finalistas = [c for c in candidatos if c[2] >= prob_lider * PLACAR_FRACAO_LIDER]
+        melhor = max(finalistas, key=lambda c: c[3])
+
+    if melhor is None:
+        return None, None, None, None, None, None
+
+    placar, odd, prob, valor = melhor
+    contexto = (
+        f"{mandante.get('nome','Mandante')} (casa): média {mandante['media_gols_feitos']:.2f} gols/jogo, "
+        f"estilo {estilo_mand}, placar comum {placar_comum_casa}:X. "
+        f"{visitante.get('nome','Visitante')} (fora): média {visitante['media_gols_feitos']:.2f} gols/jogo, "
+        f"estilo {estilo_vis}, placar comum X:{placar_comum_fora}. "
+        f"λ {lambda_casa:.2f} x {lambda_fora:.2f} | prob {prob*100:.1f}% | valor {valor:.2f}"
+    )
+    return placar, odd, prob, lambda_casa, lambda_fora, contexto
 
 # ─────────────────────────────────────────────
 # ENTRADA PRINCIPAL — VISITANTE REATIVO
